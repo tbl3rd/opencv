@@ -60,7 +60,7 @@ inline void _InputArray::init(int _flags, const void* _obj, Size _sz)
 
 inline void* _InputArray::getObj() const { return obj; }
 
-inline _InputArray::_InputArray() { init(0, 0); }
+inline _InputArray::_InputArray() { init(NONE, 0); }
 inline _InputArray::_InputArray(int _flags, void* _obj) { init(_flags, _obj); }
 inline _InputArray::_InputArray(const Mat& m) { init(MAT+ACCESS_READ, &m); }
 inline _InputArray::_InputArray(const std::vector<Mat>& vec) { init(STD_VECTOR_MAT+ACCESS_READ, &vec); }
@@ -186,6 +186,12 @@ inline _OutputArray::_OutputArray(const Mat& m)
 inline _OutputArray::_OutputArray(const std::vector<Mat>& vec)
 { init(FIXED_SIZE + STD_VECTOR_MAT + ACCESS_WRITE, &vec); }
 
+inline _OutputArray::_OutputArray(const UMat& m)
+{ init(FIXED_TYPE + FIXED_SIZE + UMAT + ACCESS_WRITE, &m); }
+
+inline _OutputArray::_OutputArray(const std::vector<UMat>& vec)
+{ init(FIXED_SIZE + STD_VECTOR_UMAT + ACCESS_WRITE, &vec); }
+
 inline _OutputArray::_OutputArray(const cuda::GpuMat& d_mat)
 { init(FIXED_TYPE + FIXED_SIZE + GPU_MAT + ACCESS_WRITE, &d_mat); }
 
@@ -266,6 +272,12 @@ inline _InputOutputArray::_InputOutputArray(const Mat& m)
 
 inline _InputOutputArray::_InputOutputArray(const std::vector<Mat>& vec)
 { init(FIXED_SIZE + STD_VECTOR_MAT + ACCESS_RW, &vec); }
+
+inline _InputOutputArray::_InputOutputArray(const UMat& m)
+{ init(FIXED_TYPE + FIXED_SIZE + UMAT + ACCESS_RW, &m); }
+
+inline _InputOutputArray::_InputOutputArray(const std::vector<UMat>& vec)
+{ init(FIXED_SIZE + STD_VECTOR_UMAT + ACCESS_RW, &vec); }
 
 inline _InputOutputArray::_InputOutputArray(const cuda::GpuMat& d_mat)
 { init(FIXED_TYPE + FIXED_SIZE + GPU_MAT + ACCESS_RW, &d_mat); }
@@ -617,9 +629,9 @@ inline void Mat::release()
 {
     if( u && CV_XADD(&u->refcount, -1) == 1 )
         deallocate();
+    u = NULL;
     data = datastart = dataend = datalimit = 0;
     size.p[0] = 0;
-    u = 0;
 }
 
 inline
@@ -1906,7 +1918,7 @@ SparseMat_<_Tp>::SparseMat_(const SparseMat& m)
     if( m.type() == DataType<_Tp>::type )
         *this = (const SparseMat_<_Tp>&)m;
     else
-        m.convertTo(this, DataType<_Tp>::type);
+        m.convertTo(*this, DataType<_Tp>::type);
 }
 
 template<typename _Tp> inline

@@ -1,7 +1,6 @@
 SET(OPENCV_OCL_SAMPLES_REQUIRED_DEPS opencv_core opencv_flann opencv_imgproc opencv_highgui
                                      opencv_ml opencv_video opencv_objdetect opencv_features2d
-                                     opencv_calib3d opencv_legacy opencv_contrib opencv_ocl
-                                     opencv_nonfree opencv_bioinspired)
+                                     opencv_calib3d opencv_legacy opencv_contrib opencv_ocl opencv_nonfree)
 
 ocv_check_dependencies(${OPENCV_OCL_SAMPLES_REQUIRED_DEPS})
 
@@ -51,7 +50,7 @@ if(BUILD_EXAMPLES AND OCV_DEPENDENCIES_FOUND)
   endforeach()
 endif()
 
-if (INSTALL_C_EXAMPLES AND NOT WIN32)
+if(INSTALL_C_EXAMPLES AND NOT WIN32)
   file(GLOB install_list *.c *.cpp *.jpg *.png *.data makefile.* build_all.sh *.dsp *.cmd )
   install(FILES ${install_list}
           DESTINATION share/OpenCV/samples/${project}

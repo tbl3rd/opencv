@@ -164,6 +164,7 @@ class CV_EXPORTS Regression
 {
 public:
     static Regression& add(TestBase* test, const std::string& name, cv::InputArray array, double eps = DBL_EPSILON, ERROR_TYPE err = ERROR_ABSOLUTE);
+    static Regression& addMoments(TestBase* test, const std::string& name, const cv::Moments & array, double eps = DBL_EPSILON, ERROR_TYPE err = ERROR_ABSOLUTE);
     static Regression& addKeypoints(TestBase* test, const std::string& name, const std::vector<cv::KeyPoint>& array, double eps = DBL_EPSILON, ERROR_TYPE err = ERROR_ABSOLUTE);
     static Regression& addMatches(TestBase* test, const std::string& name, const std::vector<cv::DMatch>& array, double eps = DBL_EPSILON, ERROR_TYPE err = ERROR_ABSOLUTE);
     static void Init(const std::string& testSuitName, const std::string& ext = ".xml");
@@ -201,6 +202,7 @@ private:
 };
 
 #define SANITY_CHECK(array, ...) ::perf::Regression::add(this, #array, array , ## __VA_ARGS__)
+#define SANITY_CHECK_MOMENTS(array, ...) ::perf::Regression::addMoments(this, #array, array , ## __VA_ARGS__)
 #define SANITY_CHECK_KEYPOINTS(array, ...) ::perf::Regression::addKeypoints(this, #array, array , ## __VA_ARGS__)
 #define SANITY_CHECK_MATCHES(array, ...) ::perf::Regression::addMatches(this, #array, array , ## __VA_ARGS__)
 #define SANITY_CHECK_NOTHING() this->setVerified();
@@ -253,7 +255,7 @@ enum PERF_STRATEGY
 {
     PERF_STRATEGY_DEFAULT = -1,
     PERF_STRATEGY_BASE = 0,
-    PERF_STRATEGY_SIMPLE = 1,
+    PERF_STRATEGY_SIMPLE = 1
 };
 
 
@@ -377,6 +379,9 @@ template<typename T> class TestBaseWithParam: public TestBase, public ::testing:
 typedef std::tr1::tuple<cv::Size, MatType> Size_MatType_t;
 typedef TestBaseWithParam<Size_MatType_t> Size_MatType;
 
+typedef std::tr1::tuple<cv::Size, MatDepth> Size_MatDepth_t;
+typedef TestBaseWithParam<Size_MatDepth_t> Size_MatDepth;
+
 /*****************************************************************************************\
 *                              Print functions for googletest                             *
 \*****************************************************************************************/
@@ -387,6 +392,7 @@ CV_EXPORTS void PrintTo(const MatType& t, std::ostream* os);
 namespace cv
 {
 
+CV_EXPORTS void PrintTo(const String& str, ::std::ostream* os);
 CV_EXPORTS void PrintTo(const Size& sz, ::std::ostream* os);
 
 } //namespace cv

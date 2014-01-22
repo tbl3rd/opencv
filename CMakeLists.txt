@@ -116,7 +116,7 @@ endif()
 OCV_OPTION(WITH_1394           "Include IEEE1394 support"                    ON   IF (NOT ANDROID AND NOT IOS) )
 OCV_OPTION(WITH_AVFOUNDATION   "Use AVFoundation for Video I/O"              ON   IF IOS)
 OCV_OPTION(WITH_CARBON         "Use Carbon for UI instead of Cocoa"          OFF  IF APPLE )
-OCV_OPTION(WITH_VTK            "Include VTK library support (and build opencv_viz module eiher)"             OFF IF (NOT ANDROID AND NOT IOS) )
+OCV_OPTION(WITH_VTK            "Include VTK library support (and build opencv_viz module eiher)"             ON  IF (NOT ANDROID AND NOT IOS) )
 OCV_OPTION(WITH_CUDA           "Include NVidia Cuda Runtime support"                                         ON  IF (NOT IOS) )
 OCV_OPTION(WITH_CUFFT          "Include NVidia Cuda Fast Fourier Transform (FFT) library support"            ON  IF (NOT IOS) )
 OCV_OPTION(WITH_CUBLAS         "Include NVidia Cuda Basic Linear Algebra Subprograms (BLAS) library support" OFF IF (NOT IOS) )
@@ -155,6 +155,8 @@ OCV_OPTION(WITH_CLP            "Include Clp support (EPL)"                   OFF
 OCV_OPTION(WITH_OPENCL         "Include OpenCL Runtime support"              ON   IF (NOT IOS) )
 OCV_OPTION(WITH_OPENCLAMDFFT   "Include AMD OpenCL FFT library support"      ON   IF (NOT ANDROID AND NOT IOS) )
 OCV_OPTION(WITH_OPENCLAMDBLAS  "Include AMD OpenCL BLAS library support"     ON   IF (NOT ANDROID AND NOT IOS) )
+OCV_OPTION(WITH_DIRECTX        "Include DirectX support"                     ON   IF WIN32 )
+OCV_OPTION(WITH_INTELPERC      "Include Intel Perceptual Computing support"  OFF  IF WIN32 )
 
 
 # OpenCV build components
@@ -206,10 +208,12 @@ OCV_OPTION(ENABLE_SSSE3               "Enable SSSE3 instructions"               
 OCV_OPTION(ENABLE_SSE41               "Enable SSE4.1 instructions"                               OFF  IF ((CV_ICC OR CMAKE_COMPILER_IS_GNUCXX) AND (X86 OR X86_64)) )
 OCV_OPTION(ENABLE_SSE42               "Enable SSE4.2 instructions"                               OFF  IF (CMAKE_COMPILER_IS_GNUCXX AND (X86 OR X86_64)) )
 OCV_OPTION(ENABLE_AVX                 "Enable AVX instructions"                                  OFF  IF ((MSVC OR CMAKE_COMPILER_IS_GNUCXX) AND (X86 OR X86_64)) )
-OCV_OPTION(ENABLE_NEON                "Enable NEON instructions"                                 OFF  IF (CMAKE_COMPILER_IS_GNUCXX AND ARM) )
+OCV_OPTION(ENABLE_NEON                "Enable NEON instructions"                                 OFF  IF CMAKE_COMPILER_IS_GNUCXX AND ARM )
+OCV_OPTION(ENABLE_VFPV3               "Enable VFPv3-D32 instructions"                            OFF  IF CMAKE_COMPILER_IS_GNUCXX AND ARM )
 OCV_OPTION(ENABLE_NOISY_WARNINGS      "Show all warnings even if they are too noisy"             OFF )
 OCV_OPTION(OPENCV_WARNINGS_ARE_ERRORS "Treat warnings as errors"                                 OFF )
 OCV_OPTION(ENABLE_WINRT_MODE          "Build with Windows Runtime support"                       OFF  IF WIN32 )
+OCV_OPTION(ENABLE_WINRT_MODE_NATIVE   "Build with Windows Runtime native C++ support"            OFF  IF WIN32 )
 
 
 # ----------------------------------------------------------------------------
@@ -224,6 +228,15 @@ include(cmake/OpenCVVersion.cmake)
 
 # Save libs and executables in the same place
 set(EXECUTABLE_OUTPUT_PATH "${CMAKE_BINARY_DIR}/bin" CACHE PATH "Output directory for applications" )
+
+if (ANDROID)
+  if (ANDROID_ABI MATCHES "NEON")
+    set(ENABLE_NEON ON)
+  endif()
+  if (ANDROID_ABI MATCHES "VFPV3")
+    set(ENABLE_VFPV3 ON)
+  endif()
+endif()
 
 if(ANDROID OR WIN32)
   set(OPENCV_DOC_INSTALL_PATH doc)
@@ -372,6 +385,8 @@ if(UNIX)
       set(OPENCV_LINKER_LIBS ${OPENCV_LINKER_LIBS} dl m log)
     elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD|NetBSD|DragonFly")
       set(OPENCV_LINKER_LIBS ${OPENCV_LINKER_LIBS} m pthread)
+    elseif(EMSCRIPTEN)
+      # no need to link to system libs with emscripten
     else()
       set(OPENCV_LINKER_LIBS ${OPENCV_LINKER_LIBS} dl m pthread rt)
     endif()
@@ -426,6 +441,11 @@ endif()
 # --- OpenCL ---
 if(WITH_OPENCL)
   include(cmake/OpenCVDetectOpenCL.cmake)
+endif()
+
+# --- DirectX ---
+if(WITH_DIRECTX)
+  include(cmake/OpenCVDetectDirectX.cmake)
 endif()
 
 # --- Matlab/Octave ---
@@ -624,7 +644,7 @@ endif()
 if(WIN32)
 status("")
     status("  Windows RT support:" HAVE_WINRT THEN YES ELSE NO)
-    if (ENABLE_WINRT_MODE)
+    if (ENABLE_WINRT_MODE OR ENABLE_WINRT_MODE_NATIVE)
       status("    Windows SDK v8.0:" ${WINDOWS_SDK_PATH})
       status("    Visual Studio 2012:" ${VISUAL_STUDIO_PATH})
     endif()
@@ -813,6 +833,11 @@ endif(DEFINED WITH_XIMEA)
 if(DEFINED WITH_XINE)
   status("    Xine:"           HAVE_XINE           THEN "YES (ver ${ALIASOF_libxine_VERSION})"     ELSE NO)
 endif(DEFINED WITH_XINE)
+
+if(DEFINED WITH_INTELPERC)
+  status("    Intel PerC:"     HAVE_INTELPERC      THEN "YES"                                 ELSE NO)
+endif(DEFINED WITH_INTELPERC)
+
 
 # ========================== Other third-party libraries ==========================
 status("")

@@ -27,7 +27,7 @@ Lixin Fan, Jutta Willamowski, Cedric Bray, 2004. ::
 
         void add( const Mat& descriptors );
         const vector<Mat>& getDescriptors() const;
-        int descripotorsCount() const;
+        int descriptorsCount() const;
 
         virtual void clear();
 
@@ -56,11 +56,11 @@ Returns a training set of descriptors.
 
 
 
-BOWTrainer::descripotorsCount
+BOWTrainer::descriptorsCount
 ---------------------------------
 Returns the count of all descriptors stored in the training set.
 
-.. ocv:function:: int BOWTrainer::descripotorsCount() const
+.. ocv:function:: int BOWTrainer::descriptorsCount() const
 
 
 
@@ -124,6 +124,7 @@ The class declaration is the following: ::
         public:
             BOWImgDescriptorExtractor( const Ptr<DescriptorExtractor>& dextractor,
                                        const Ptr<DescriptorMatcher>& dmatcher );
+            BOWImgDescriptorExtractor( const Ptr<DescriptorMatcher>& dmatcher );
             virtual ~BOWImgDescriptorExtractor(){}
 
             void setVocabulary( const Mat& vocabulary );
@@ -132,6 +133,8 @@ The class declaration is the following: ::
                           Mat& imgDescriptor,
                           vector<vector<int> >* pointIdxsOfClusters=0,
                           Mat* descriptors=0 );
+            void compute( const Mat& descriptors, Mat& imgDescriptor,
+                          std::vector<std::vector<int> >* pointIdxsOfClusters=0 );
             int descriptorSize() const;
             int descriptorType() const;
 
@@ -147,6 +150,7 @@ BOWImgDescriptorExtractor::BOWImgDescriptorExtractor
 The constructor.
 
 .. ocv:function:: BOWImgDescriptorExtractor::BOWImgDescriptorExtractor(           const Ptr<DescriptorExtractor>& dextractor,          const Ptr<DescriptorMatcher>& dmatcher )
+.. ocv:function:: BOWImgDescriptorExtractor::BOWImgDescriptorExtractor(           const Ptr<DescriptorMatcher>& dmatcher )
 
     :param dextractor: Descriptor extractor that is used to compute descriptors for an input image and its keypoints.
 
@@ -177,10 +181,13 @@ BOWImgDescriptorExtractor::compute
 Computes an image descriptor using the set visual vocabulary.
 
 .. ocv:function:: void BOWImgDescriptorExtractor::compute( const Mat& image, vector<KeyPoint>& keypoints, Mat& imgDescriptor, vector<vector<int> >* pointIdxsOfClusters=0, Mat* descriptors=0 )
+.. ocv:function:: void BOWImgDescriptorExtractor::compute( const Mat& keypointDescriptors, Mat& imgDescriptor, std::vector<std::vector<int> >* pointIdxsOfClusters=0 )
 
     :param image: Image, for which the descriptor is computed.
 
     :param keypoints: Keypoints detected in the input image.
+
+    :param keypointDescriptors: Computed descriptors to match with vocabulary.
 
     :param imgDescriptor: Computed output image descriptor.
 

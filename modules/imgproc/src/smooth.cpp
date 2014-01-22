@@ -611,8 +611,157 @@ template<> struct ColumnSum<int, ushort> : public BaseColumnFilter
     std::vector<int> sum;
 };
 
+#define DIVUP(total, grain) ((total + grain - 1) / (grain))
+
+static bool ocl_boxFilter( InputArray _src, OutputArray _dst, int ddepth,
+                           Size ksize, Point anchor, int borderType )
+{
+    int type = _src.type();
+    int cn = CV_MAT_CN(type);
+    if ((1 != cn) && (2 != cn) && (4 != cn))
+        return false;//TODO
+
+    int sdepth = CV_MAT_DEPTH(type);
+    if( ddepth < 0 )
+        ddepth = sdepth;
+    else if (ddepth != sdepth)
+        return false;
+    if( anchor.x < 0 )
+        anchor.x = ksize.width / 2;
+    if( anchor.y < 0 )
+        anchor.y = ksize.height / 2;
+
+    ocl::Kernel kernel;
+
+    //Normalize the result by default
+    float alpha = 1.0f / (ksize.height * ksize.width);
+    bool isIsolatedBorder = (borderType & BORDER_ISOLATED) != 0;
+    bool useDouble = (CV_64F == sdepth);
+    const cv::ocl::Device &device = cv::ocl::Device::getDefault();
+    int doubleFPConfig = device.doubleFPConfig();
+    if (useDouble && (0 == doubleFPConfig))
+        return false;// may be we have to check is  (0 != (CL_FP_SOFT_FLOAT & doubleFPConfig)) ?
+
+    const char* btype = NULL;
+    switch (borderType & ~BORDER_ISOLATED)
+    {
+    case BORDER_CONSTANT:
+        btype = "BORDER_CONSTANT";
+        break;
+    case BORDER_REPLICATE:
+        btype = "BORDER_REPLICATE";
+        break;
+    case BORDER_REFLECT:
+        btype = "BORDER_REFLECT";
+        break;
+    case BORDER_WRAP:
+        //CV_Error(CV_StsUnsupportedFormat, "BORDER_WRAP is not supported!");
+        return false;
+    case BORDER_REFLECT101:
+        btype = "BORDER_REFLECT_101";
+        break;
+    }
+
+    cv::Size sz = _src.size();
+
+    size_t globalsize[2] = {sz.width, sz.height};
+    size_t localsize[2] = {0, 1};
+
+    UMat src; Size wholeSize;
+    if (!isIsolatedBorder)
+    {
+        src = _src.getUMat();
+        Point ofs;
+        src.locateROI(wholeSize, ofs);
+    }
+
+    size_t maxWorkItemSizes[32]; device.maxWorkItemSizes(maxWorkItemSizes);
+    size_t tryWorkItems = maxWorkItemSizes[0];
+    for (;;)
+    {
+        size_t BLOCK_SIZE = tryWorkItems;
+        while (BLOCK_SIZE > 32 && BLOCK_SIZE >= (size_t)ksize.width * 2 && BLOCK_SIZE > (size_t)sz.width * 2)
+            BLOCK_SIZE /= 2;
+        size_t BLOCK_SIZE_Y = 8; // TODO Check heuristic value on devices
+        while (BLOCK_SIZE_Y < BLOCK_SIZE / 8 && BLOCK_SIZE_Y * device.maxComputeUnits() * 32 < (size_t)sz.height)
+            BLOCK_SIZE_Y *= 2;
+
+        if ((size_t)ksize.width > BLOCK_SIZE)
+            return false;
+
+        int requiredTop = anchor.y;
+        int requiredLeft = (int)BLOCK_SIZE; // not this: anchor.x;
+        int requiredBottom = ksize.height - 1 - anchor.y;
+        int requiredRight = (int)BLOCK_SIZE; // not this: ksize.width - 1 - anchor.x;
+        int h = isIsolatedBorder ? sz.height : wholeSize.height;
+        int w = isIsolatedBorder ? sz.width : wholeSize.width;
+
+        bool extra_extrapolation = h < requiredTop || h < requiredBottom || w < requiredLeft || w < requiredRight;
+
+        if ((w < ksize.width) || (h < ksize.height))
+            return false;
+
+        char build_options[1024];
+        sprintf(build_options, "-D LOCAL_SIZE=%d -D BLOCK_SIZE_Y=%d -D DATA_DEPTH=%d -D DATA_CHAN=%d -D USE_DOUBLE=%d -D ANCHOR_X=%d -D ANCHOR_Y=%d -D KERNEL_SIZE_X=%d -D KERNEL_SIZE_Y=%d -D %s -D %s -D %s",
+                (int)BLOCK_SIZE, (int)BLOCK_SIZE_Y,
+                sdepth, cn, useDouble ? 1 : 0,
+                anchor.x, anchor.y, ksize.width, ksize.height,
+                btype,
+                extra_extrapolation ? "EXTRA_EXTRAPOLATION" : "NO_EXTRA_EXTRAPOLATION",
+                isIsolatedBorder ? "BORDER_ISOLATED" : "NO_BORDER_ISOLATED");
+
+        localsize[0] = BLOCK_SIZE;
+        globalsize[0] = DIVUP(sz.width, BLOCK_SIZE - (ksize.width - 1)) * BLOCK_SIZE;
+        globalsize[1] = DIVUP(sz.height, BLOCK_SIZE_Y);
+
+        cv::String errmsg;
+        kernel.create("boxFilter", cv::ocl::imgproc::boxFilter_oclsrc, build_options);
+
+        size_t kernelWorkGroupSize = kernel.workGroupSize();
+        if (localsize[0] <= kernelWorkGroupSize)
+            break;
+
+        if (BLOCK_SIZE < kernelWorkGroupSize)
+            return false;
+        tryWorkItems = kernelWorkGroupSize;
+    }
+
+    _dst.create(sz, CV_MAKETYPE(ddepth, cn));
+    UMat dst = _dst.getUMat();
+    if (src.empty())
+        src = _src.getUMat();
+    int idxArg = 0;
+    idxArg = kernel.set(idxArg, ocl::KernelArg::PtrReadOnly(src));
+    idxArg = kernel.set(idxArg, (int)src.step);
+    int srcOffsetX = (int)((src.offset % src.step) / src.elemSize());
+    int srcOffsetY = (int)(src.offset / src.step);
+    int srcEndX = (isIsolatedBorder ? (srcOffsetX + sz.width) : wholeSize.width);
+    int srcEndY = (isIsolatedBorder ? (srcOffsetY + sz.height) : wholeSize.height);
+    idxArg = kernel.set(idxArg, srcOffsetX);
+    idxArg = kernel.set(idxArg, srcOffsetY);
+    idxArg = kernel.set(idxArg, srcEndX);
+    idxArg = kernel.set(idxArg, srcEndY);
+    idxArg = kernel.set(idxArg, ocl::KernelArg::WriteOnly(dst));
+    float borderValue[4] = {0, 0, 0, 0};
+    double borderValueDouble[4] = {0, 0, 0, 0};
+    if ((borderType & ~BORDER_ISOLATED) == BORDER_CONSTANT)
+    {
+        int cnocl = (3 == cn) ? 4 : cn;
+        if (useDouble)
+            idxArg = kernel.set(idxArg, (void *)&borderValueDouble[0], sizeof(double) * cnocl);
+        else
+            idxArg = kernel.set(idxArg, (void *)&borderValue[0], sizeof(float) * cnocl);
+    }
+    if (useDouble)
+        idxArg = kernel.set(idxArg, (double)alpha);
+    else
+        idxArg = kernel.set(idxArg, (float)alpha);
+
+    return kernel.run(2, globalsize, localsize, true);
+}
 
 }
+
 
 cv::Ptr<cv::BaseRowFilter> cv::getRowSumFilter(int srcType, int sumType, int ksize, int anchor)
 {
@@ -713,6 +862,10 @@ void cv::boxFilter( InputArray _src, OutputArray _dst, int ddepth,
                 Size ksize, Point anchor,
                 bool normalize, int borderType )
 {
+    bool use_opencl = ocl::useOpenCL() && _dst.isUMat() && normalize;
+    if( use_opencl && ocl_boxFilter(_src, _dst, ddepth, ksize, anchor, borderType) )
+        return;
+
     Mat src = _src.getMat();
     int sdepth = src.depth(), cn = src.channels();
     if( ddepth < 0 )
@@ -741,6 +894,114 @@ void cv::blur( InputArray src, OutputArray dst,
 {
     boxFilter( src, dst, -1, ksize, anchor, true, borderType );
 }
+
+
+/****************************************************************************************\
+                                    Squared Box Filter
+\****************************************************************************************/
+
+namespace cv
+{
+
+template<typename T, typename ST> struct SqrRowSum : public BaseRowFilter
+{
+    SqrRowSum( int _ksize, int _anchor )
+    {
+        ksize = _ksize;
+        anchor = _anchor;
+    }
+
+    void operator()(const uchar* src, uchar* dst, int width, int cn)
+    {
+        const T* S = (const T*)src;
+        ST* D = (ST*)dst;
+        int i = 0, k, ksz_cn = ksize*cn;
+
+        width = (width - 1)*cn;
+        for( k = 0; k < cn; k++, S++, D++ )
+        {
+            ST s = 0;
+            for( i = 0; i < ksz_cn; i += cn )
+            {
+                ST val = (ST)S[i];
+                s += val*val;
+            }
+            D[0] = s;
+            for( i = 0; i < width; i += cn )
+            {
+                ST val0 = (ST)S[i], val1 = (ST)S[i + ksz_cn];
+                s += val1*val1 - val0*val0;
+                D[i+cn] = s;
+            }
+        }
+    }
+};
+
+static Ptr<BaseRowFilter> getSqrRowSumFilter(int srcType, int sumType, int ksize, int anchor)
+{
+    int sdepth = CV_MAT_DEPTH(srcType), ddepth = CV_MAT_DEPTH(sumType);
+    CV_Assert( CV_MAT_CN(sumType) == CV_MAT_CN(srcType) );
+
+    if( anchor < 0 )
+        anchor = ksize/2;
+
+    if( sdepth == CV_8U && ddepth == CV_32S )
+        return makePtr<SqrRowSum<uchar, int> >(ksize, anchor);
+    if( sdepth == CV_8U && ddepth == CV_64F )
+        return makePtr<SqrRowSum<uchar, double> >(ksize, anchor);
+    if( sdepth == CV_16U && ddepth == CV_64F )
+        return makePtr<SqrRowSum<ushort, double> >(ksize, anchor);
+    if( sdepth == CV_16S && ddepth == CV_64F )
+        return makePtr<SqrRowSum<short, double> >(ksize, anchor);
+    if( sdepth == CV_32F && ddepth == CV_64F )
+        return makePtr<SqrRowSum<float, double> >(ksize, anchor);
+    if( sdepth == CV_64F && ddepth == CV_64F )
+        return makePtr<SqrRowSum<double, double> >(ksize, anchor);
+
+    CV_Error_( CV_StsNotImplemented,
+              ("Unsupported combination of source format (=%d), and buffer format (=%d)",
+               srcType, sumType));
+
+    return Ptr<BaseRowFilter>();
+}
+
+}
+
+void cv::sqrBoxFilter( InputArray _src, OutputArray _dst, int ddepth,
+                       Size ksize, Point anchor,
+                       bool normalize, int borderType )
+{
+    Mat src = _src.getMat();
+    int sdepth = src.depth(), cn = src.channels();
+    if( ddepth < 0 )
+        ddepth = sdepth < CV_32F ? CV_32F : CV_64F;
+    _dst.create( src.size(), CV_MAKETYPE(ddepth, cn) );
+    Mat dst = _dst.getMat();
+    if( borderType != BORDER_CONSTANT && normalize )
+    {
+        if( src.rows == 1 )
+            ksize.height = 1;
+        if( src.cols == 1 )
+            ksize.width = 1;
+    }
+
+    int sumType = CV_64F;
+    if( sdepth == CV_8U )
+        sumType = CV_32S;
+    sumType = CV_MAKETYPE( sumType, cn );
+    int srcType = CV_MAKETYPE(sdepth, cn);
+    int dstType = CV_MAKETYPE(ddepth, cn);
+
+    Ptr<BaseRowFilter> rowFilter = getSqrRowSumFilter(srcType, sumType, ksize.width, anchor.x );
+    Ptr<BaseColumnFilter> columnFilter = getColumnSumFilter(sumType,
+                                                            dstType, ksize.height, anchor.y,
+                                                            normalize ? 1./(ksize.width*ksize.height) : 1);
+
+    Ptr<FilterEngine> f = makePtr<FilterEngine>(Ptr<BaseFilter>(), rowFilter, columnFilter,
+                                                srcType, dstType, sumType, borderType );
+    f->apply( src, dst );
+}
+
 
 /****************************************************************************************\
                                      Gaussian Blur
@@ -1661,19 +1922,59 @@ medianBlur_SortNet( const Mat& _src, Mat& _dst, int m )
 
 }
 
+namespace cv
+{
+    static bool ocl_medianFilter ( InputArray _src, OutputArray _dst, int m)
+    {
+        int type = _src.type();
+        int depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type);
+
+        if (!((depth == CV_8U || depth == CV_16U || depth == CV_16S || depth == CV_32F) && (cn != 3 && cn <= 4)))
+            return false;
+
+        const char * kernelName;
+
+        if (m==3)
+            kernelName = "medianFilter3";
+        else if (m==5)
+            kernelName = "medianFilter5";
+        else
+            return false;
+
+        ocl::Kernel k(kernelName,ocl::imgproc::medianFilter_oclsrc,format("-D type=%s",ocl::typeToStr(type)));
+        if (k.empty())
+            return false;
+
+        _dst.create(_src.size(),type);
+        UMat src = _src.getUMat(), dst = _dst.getUMat();
+
+        size_t globalsize[2] = {(src.cols + 18) / 16 * 16, (src.rows + 15) / 16 * 16};
+        size_t localsize[2] = {16, 16};
+
+        return k.args(ocl::KernelArg::ReadOnlyNoSize(src), ocl::KernelArg::WriteOnly(dst)).run(2,globalsize,localsize,false);
+    }
+}
+
 void cv::medianBlur( InputArray _src0, OutputArray _dst, int ksize )
 {
-    Mat src0 = _src0.getMat();
-    _dst.create( src0.size(), src0.type() );
-    Mat dst = _dst.getMat();
+    CV_Assert( (ksize % 2 == 1) && (_src0.dims() <= 2 ));
 
     if( ksize <= 1 )
     {
+        Mat src0 = _src0.getMat();
+        _dst.create( src0.size(), src0.type() );
+        Mat dst = _dst.getMat();
         src0.copyTo(dst);
         return;
     }
 
-    CV_Assert( ksize % 2 == 1 );
+    bool use_opencl = ocl::useOpenCL() && _dst.isUMat();
+    if ( use_opencl && ocl_medianFilter(_src0,_dst, ksize))
+        return;
+
+    Mat src0 = _src0.getMat();
+    _dst.create( src0.size(), src0.type() );
+    Mat dst = _dst.getMat();
 
 #ifdef HAVE_TEGRA_OPTIMIZATION
     if (tegra::medianBlur(src0, dst, ksize))

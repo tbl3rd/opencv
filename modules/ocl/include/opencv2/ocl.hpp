@@ -1,45 +1,11 @@
-/*M///////////////////////////////////////////////////////////////////////////////////////
-//
-//  IMPORTANT: READ BEFORE DOWNLOADING, COPYING, INSTALLING OR USING.
-//
-//  By downloading, copying, installing or using the software you agree to this license.
-//  If you do not agree to this license, do not download, install,
-//  copy or use the software.
-//
-//
-//                           License Agreement
-//                For Open Source Computer Vision Library
-//
+// This file is part of OpenCV project.
+// It is subject to the license terms in the LICENSE file found in the top-level directory
+// of this distribution and at http://opencv.org/license.html.
+
 // Copyright (C) 2010-2012, Institute Of Software Chinese Academy Of Science, all rights reserved.
 // Copyright (C) 2010-2012, Advanced Micro Devices, Inc., all rights reserved.
 // Copyright (C) 2010-2012, Multicoreware, Inc., all rights reserved.
 // Third party copyrights are property of their respective owners.
-//
-// Redistribution and use in source and binary forms, with or without modification,
-// are permitted provided that the following conditions are met:
-//
-//   * Redistribution's of source code must retain the above copyright notice,
-//     this list of conditions and the following disclaimer.
-//
-//   * Redistribution's in binary form must reproduce the above copyright notice,
-//     this list of conditions and the following disclaimer in the documentation
-//     and/or other materials provided with the distribution.
-//
-//   * The name of the copyright holders may not be used to endorse or promote products
-//     derived from this software without specific prior written permission.
-//
-// This software is provided by the copyright holders and contributors "as is" and
-// any express or implied warranties, including, but not limited to, the implied
-// warranties of merchantability and fitness for a particular purpose are disclaimed.
-// In no event shall the Intel Corporation or contributors be liable for any direct,
-// indirect, incidental, special, exemplary, or consequential damages
-// (including, but not limited to, procurement of substitute goods or services;
-// loss of use, data, or profits; or business interruption) however caused
-// and on any theory of liability, whether in contract, strict liability,
-// or tort (including negligence or otherwise) arising in any way out of
-// the use of this software, even if advised of the possibility of such damage.
-//
-//M*/
 
 #ifndef __OPENCV_OCL_HPP__
 #define __OPENCV_OCL_HPP__
@@ -118,6 +84,7 @@ namespace cv
             const PlatformInfo* platform;
 
             DeviceInfo();
+            ~DeviceInfo();
         };
 
         struct PlatformInfo
@@ -136,6 +103,7 @@ namespace cv
             std::vector<const DeviceInfo*> devices;
 
             PlatformInfo();
+            ~PlatformInfo();
         };
 
         //////////////////////////////// Initialization & Info ////////////////////////
@@ -150,6 +118,10 @@ namespace cv
 
         // set device you want to use
         CV_EXPORTS void setDevice(const DeviceInfo* info);
+
+        // Initialize from OpenCL handles directly.
+        // Argument types is (pointers): cl_platform_id*, cl_context*, cl_device_id*
+        CV_EXPORTS void initializeContext(void* pClPlatform, void* pClContext, void* pClDevice);
 
         enum FEATURE_TYPE
         {
@@ -195,7 +167,7 @@ namespace cv
             CACHE_NONE    = 0,        // do not cache OpenCL binary
             CACHE_DEBUG   = 0x1 << 0, // cache OpenCL binary when built in debug mode
             CACHE_RELEASE = 0x1 << 1, // default behavior, only cache when built in release mode
-            CACHE_ALL     = CACHE_DEBUG | CACHE_RELEASE, // cache opencl binary
+            CACHE_ALL     = CACHE_DEBUG | CACHE_RELEASE // cache opencl binary
         };
         //! Enable or disable OpenCL program binary caching onto local disk
         // After a program (*.cl files in opencl/ folder) is built at runtime, we allow the
@@ -723,17 +695,17 @@ namespace cv
 
         //! returns the separable linear filter engine
         CV_EXPORTS Ptr<FilterEngine_GPU> createSeparableLinearFilter_GPU(int srcType, int dstType, const Mat &rowKernel,
-                const Mat &columnKernel, const Point &anchor = Point(-1, -1), double delta = 0.0, int bordertype = BORDER_DEFAULT);
+                const Mat &columnKernel, const Point &anchor = Point(-1, -1), double delta = 0.0, int bordertype = BORDER_DEFAULT, Size imgSize = Size(-1,-1));
 
         //! returns the separable filter engine with the specified filters
         CV_EXPORTS Ptr<FilterEngine_GPU> createSeparableFilter_GPU(const Ptr<BaseRowFilter_GPU> &rowFilter,
                 const Ptr<BaseColumnFilter_GPU> &columnFilter);
 
         //! returns the Gaussian filter engine
-        CV_EXPORTS Ptr<FilterEngine_GPU> createGaussianFilter_GPU(int type, Size ksize, double sigma1, double sigma2 = 0, int bordertype = BORDER_DEFAULT);
+        CV_EXPORTS Ptr<FilterEngine_GPU> createGaussianFilter_GPU(int type, Size ksize, double sigma1, double sigma2 = 0, int bordertype = BORDER_DEFAULT, Size imgSize = Size(-1,-1));
 
         //! returns filter engine for the generalized Sobel operator
-        CV_EXPORTS Ptr<FilterEngine_GPU> createDerivFilter_GPU( int srcType, int dstType, int dx, int dy, int ksize, int borderType = BORDER_DEFAULT );
+        CV_EXPORTS Ptr<FilterEngine_GPU> createDerivFilter_GPU( int srcType, int dstType, int dx, int dy, int ksize, int borderType = BORDER_DEFAULT, Size imgSize = Size(-1,-1) );
 
         //! applies Laplacian operator to the image
         // supports only ksize = 1 and ksize = 3
@@ -1467,8 +1439,10 @@ namespace cv
             oclMat Dx_;
             oclMat Dy_;
             oclMat eig_;
+            oclMat eig_minmax_;
             oclMat minMaxbuf_;
             oclMat tmpCorners_;
+            oclMat counter_;
         };
 
         inline GoodFeaturesToTrackDetector_OCL::GoodFeaturesToTrackDetector_OCL(int maxCorners_, double qualityLevel_, double minDistance_,
@@ -1539,6 +1513,110 @@ namespace cv
 
             int calcKeypointsOCL(const oclMat& img, const oclMat& mask, int maxKeypoints);
             int nonmaxSupressionOCL(oclMat& keypoints);
+        };
+
+        ////////////////////////////////// ORB Descriptor Extractor //////////////////////////////////
+        class CV_EXPORTS ORB_OCL
+        {
+        public:
+            enum
+            {
+                X_ROW = 0,
+                Y_ROW,
+                RESPONSE_ROW,
+                ANGLE_ROW,
+                OCTAVE_ROW,
+                SIZE_ROW,
+                ROWS_COUNT
+            };
+
+            enum
+            {
+                DEFAULT_FAST_THRESHOLD = 20
+            };
+
+            //! Constructor
+            explicit ORB_OCL(int nFeatures = 500, float scaleFactor = 1.2f, int nLevels = 8, int edgeThreshold = 31,
+                             int firstLevel = 0, int WTA_K = 2, int scoreType = 0, int patchSize = 31);
+
+            //! Compute the ORB features on an image
+            //! image - the image to compute the features (supports only CV_8UC1 images)
+            //! mask - the mask to apply
+            //! keypoints - the resulting keypoints
+            void operator ()(const oclMat& image, const oclMat& mask, std::vector<KeyPoint>& keypoints);
+            void operator ()(const oclMat& image, const oclMat& mask, oclMat& keypoints);
+
+            //! Compute the ORB features and descriptors on an image
+            //! image - the image to compute the features (supports only CV_8UC1 images)
+            //! mask - the mask to apply
+            //! keypoints - the resulting keypoints
+            //! descriptors - descriptors array
+            void operator ()(const oclMat& image, const oclMat& mask, std::vector<KeyPoint>& keypoints, oclMat& descriptors);
+            void operator ()(const oclMat& image, const oclMat& mask, oclMat& keypoints, oclMat& descriptors);
+
+            //! download keypoints from device to host memory
+            static void downloadKeyPoints(const oclMat& d_keypoints, std::vector<KeyPoint>& keypoints);
+            //! convert keypoints to KeyPoint vector
+            static void convertKeyPoints(const Mat& d_keypoints, std::vector<KeyPoint>& keypoints);
+
+            //! returns the descriptor size in bytes
+            inline int descriptorSize() const { return kBytes; }
+            inline int descriptorType() const { return CV_8U; }
+            inline int defaultNorm() const { return NORM_HAMMING; }
+
+            inline void setFastParams(int threshold, bool nonmaxSupression = true)
+            {
+                fastDetector_.threshold = threshold;
+                fastDetector_.nonmaxSupression = nonmaxSupression;
+            }
+
+            //! release temporary buffer's memory
+            void release();
+
+            //! if true, image will be blurred before descriptors calculation
+            bool blurForDescriptor;
+
+        private:
+            enum { kBytes = 32 };
+
+            void buildScalePyramids(const oclMat& image, const oclMat& mask);
+
+            void computeKeyPointsPyramid();
+
+            void computeDescriptors(oclMat& descriptors);
+
+            void mergeKeyPoints(oclMat& keypoints);
+
+            int nFeatures_;
+            float scaleFactor_;
+            int nLevels_;
+            int edgeThreshold_;
+            int firstLevel_;
+            int WTA_K_;
+            int scoreType_;
+            int patchSize_;
+
+            // The number of desired features per scale
+            std::vector<size_t> n_features_per_level_;
+
+            // Points to compute BRIEF descriptors from
+            oclMat pattern_;
+
+            std::vector<oclMat> imagePyr_;
+            std::vector<oclMat> maskPyr_;
+
+            oclMat buf_;
+
+            std::vector<oclMat> keyPointsPyr_;
+            std::vector<int> keyPointsCount_;
+
+            FAST_OCL fastDetector_;
+
+            Ptr<ocl::FilterEngine_GPU> blurFilter;
+
+            oclMat d_keypoints_;
+
+            oclMat uMax_;
         };
 
         /////////////////////////////// PyrLKOpticalFlow /////////////////////////////////////

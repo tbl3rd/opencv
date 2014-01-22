@@ -612,16 +612,111 @@ void cv::mixChannels( const Mat* src, size_t nsrcs, Mat* dst, size_t ndsts, cons
     }
 }
 
+namespace cv {
+
+static void getUMatIndex(const std::vector<UMat> & um, int cn, int & idx, int & cnidx)
+{
+    int totalChannels = 0;
+    for (size_t i = 0, size = um.size(); i < size; ++i)
+    {
+        int ccn = um[i].channels();
+        totalChannels += ccn;
+
+        if (totalChannels == cn)
+        {
+            idx = (int)(i + 1);
+            cnidx = 0;
+            return;
+        }
+        else if (totalChannels > cn)
+        {
+            idx = (int)i;
+            cnidx = i == 0 ? cn : (cn - totalChannels + ccn);
+            return;
+        }
+    }
+
+    idx = cnidx = -1;
+}
+
+static bool ocl_mixChannels(InputArrayOfArrays _src, InputOutputArrayOfArrays _dst,
+                            const int* fromTo, size_t npairs)
+{
+    const std::vector<UMat> & src = *(const std::vector<UMat> *)_src.getObj();
+    std::vector<UMat> & dst = *(std::vector<UMat> *)_dst.getObj();
+
+    size_t nsrc = src.size(), ndst = dst.size();
+    CV_Assert(nsrc > 0 && ndst > 0);
+
+    Size size = src[0].size();
+    int depth = src[0].depth(), esz = CV_ELEM_SIZE(depth);
+
+    for (size_t i = 1, ssize = src.size(); i < ssize; ++i)
+        CV_Assert(src[i].size() == size && src[i].depth() == depth);
+    for (size_t i = 0, dsize = dst.size(); i < dsize; ++i)
+        CV_Assert(dst[i].size() == size && dst[i].depth() == depth);
+
+    String declsrc, decldst, declproc, declcn;
+    std::vector<UMat> srcargs(npairs), dstargs(npairs);
+
+    for (size_t i = 0; i < npairs; ++i)
+    {
+        int scn = fromTo[i<<1], dcn = fromTo[(i<<1) + 1];
+        int src_idx, src_cnidx, dst_idx, dst_cnidx;
+
+        getUMatIndex(src, scn, src_idx, src_cnidx);
+        getUMatIndex(dst, dcn, dst_idx, dst_cnidx);
+
+        CV_Assert(dst_idx >= 0 && src_idx >= 0);
+
+        srcargs[i] = src[src_idx];
+        srcargs[i].offset += src_cnidx * esz;
+
+        dstargs[i] = dst[dst_idx];
+        dstargs[i].offset += dst_cnidx * esz;
+
+        declsrc += format("DECLARE_INPUT_MAT(%d)", i);
+        decldst += format("DECLARE_OUTPUT_MAT(%d)", i);
+        declproc += format("PROCESS_ELEM(%d)", i);
+        declcn += format(" -D scn%d=%d -D dcn%d=%d", i, src[src_idx].channels(), i, dst[dst_idx].channels());
+    }
+
+    ocl::Kernel k("mixChannels", ocl::core::mixchannels_oclsrc,
+                  format("-D T=%s -D DECLARE_INPUT_MATS=%s -D DECLARE_OUTPUT_MATS=%s"
+                         " -D PROCESS_ELEMS=%s%s", ocl::memopTypeToStr(depth),
+                         declsrc.c_str(), decldst.c_str(), declproc.c_str(), declcn.c_str()));
+    if (k.empty())
+        return false;
+
+    int argindex = 0;
+    for (size_t i = 0; i < npairs; ++i)
+        argindex = k.set(argindex, ocl::KernelArg::ReadOnlyNoSize(srcargs[i]));
+    for (size_t i = 0; i < npairs; ++i)
+        argindex = k.set(argindex, ocl::KernelArg::WriteOnlyNoSize(dstargs[i]));
+    k.set(k.set(argindex, size.height), size.width);
+
+    size_t globalsize[2] = { size.width, size.height };
+    return k.run(2, globalsize, NULL, false);
+}
+
+}
 
 void cv::mixChannels(InputArrayOfArrays src, InputOutputArrayOfArrays dst,
                  const int* fromTo, size_t npairs)
 {
-    if(npairs == 0)
+    if (npairs == 0 || fromTo == NULL)
         return;
+
+    if (ocl::useOpenCL() && src.isUMatVector() && dst.isUMatVector() &&
+            ocl_mixChannels(src, dst, fromTo, npairs))
+        return;
+
     bool src_is_mat = src.kind() != _InputArray::STD_VECTOR_MAT &&
-                      src.kind() != _InputArray::STD_VECTOR_VECTOR;
+            src.kind() != _InputArray::STD_VECTOR_VECTOR &&
+            src.kind() != _InputArray::STD_VECTOR_UMAT;
     bool dst_is_mat = dst.kind() != _InputArray::STD_VECTOR_MAT &&
-                      dst.kind() != _InputArray::STD_VECTOR_VECTOR;
+            dst.kind() != _InputArray::STD_VECTOR_VECTOR &&
+            dst.kind() != _InputArray::STD_VECTOR_UMAT;
     int i;
     int nsrc = src_is_mat ? 1 : (int)src.total();
     int ndst = dst_is_mat ? 1 : (int)dst.total();
@@ -639,12 +734,19 @@ void cv::mixChannels(InputArrayOfArrays src, InputOutputArrayOfArrays dst,
 void cv::mixChannels(InputArrayOfArrays src, InputOutputArrayOfArrays dst,
                      const std::vector<int>& fromTo)
 {
-    if(fromTo.empty())
+    if (fromTo.empty())
         return;
+
+    if (ocl::useOpenCL() && src.isUMatVector() && dst.isUMatVector() &&
+            ocl_mixChannels(src, dst, &fromTo[0], fromTo.size()>>1))
+        return;
+
     bool src_is_mat = src.kind() != _InputArray::STD_VECTOR_MAT &&
-                      src.kind() != _InputArray::STD_VECTOR_VECTOR;
+            src.kind() != _InputArray::STD_VECTOR_VECTOR &&
+            src.kind() != _InputArray::STD_VECTOR_UMAT;
     bool dst_is_mat = dst.kind() != _InputArray::STD_VECTOR_MAT &&
-                      dst.kind() != _InputArray::STD_VECTOR_VECTOR;
+            dst.kind() != _InputArray::STD_VECTOR_VECTOR &&
+            dst.kind() != _InputArray::STD_VECTOR_UMAT;
     int i;
     int nsrc = src_is_mat ? 1 : (int)src.total();
     int ndst = dst_is_mat ? 1 : (int)dst.total();
@@ -661,20 +763,41 @@ void cv::mixChannels(InputArrayOfArrays src, InputOutputArrayOfArrays dst,
 
 void cv::extractChannel(InputArray _src, OutputArray _dst, int coi)
 {
-    Mat src = _src.getMat();
-    CV_Assert( 0 <= coi && coi < src.channels() );
-    _dst.create(src.dims, &src.size[0], src.depth());
-    Mat dst = _dst.getMat();
+    int type = _src.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type);
+    CV_Assert( 0 <= coi && coi < cn );
     int ch[] = { coi, 0 };
+
+    if (ocl::useOpenCL() && _src.dims() <= 2 && _dst.isUMat())
+    {
+        UMat src = _src.getUMat();
+        _dst.create(src.dims, &src.size[0], depth);
+        UMat dst = _dst.getUMat();
+        mixChannels(std::vector<UMat>(1, src), std::vector<UMat>(1, dst), ch, 1);
+        return;
+    }
+
+    Mat src = _src.getMat();
+    _dst.create(src.dims, &src.size[0], depth);
+    Mat dst = _dst.getMat();
     mixChannels(&src, 1, &dst, 1, ch, 1);
 }
 
 void cv::insertChannel(InputArray _src, InputOutputArray _dst, int coi)
 {
-    Mat src = _src.getMat(), dst = _dst.getMat();
-    CV_Assert( src.size == dst.size && src.depth() == dst.depth() );
-    CV_Assert( 0 <= coi && coi < dst.channels() && src.channels() == 1 );
+    int stype = _src.type(), sdepth = CV_MAT_DEPTH(stype), scn = CV_MAT_CN(stype);
+    int dtype = _dst.type(), ddepth = CV_MAT_DEPTH(dtype), dcn = CV_MAT_CN(dtype);
+    CV_Assert( _src.sameSize(_dst) && sdepth == ddepth );
+    CV_Assert( 0 <= coi && coi < dcn && scn == 1 );
+
     int ch[] = { 0, coi };
+    if (ocl::useOpenCL() && _src.dims() <= 2 && _dst.isUMat())
+    {
+        UMat src = _src.getUMat(), dst = _dst.getUMat();
+        mixChannels(std::vector<UMat>(1, src), std::vector<UMat>(1, dst), ch, 1);
+        return;
+    }
+
+    Mat src = _src.getMat(), dst = _dst.getMat();
     mixChannels(&src, 1, &dst, 1, ch, 1);
 }
 
@@ -938,122 +1061,122 @@ stype* dst, size_t dstep, Size size, double*) \
 }
 
 
-DEF_CVT_SCALE_ABS_FUNC(8u, cvtScaleAbs_, uchar, uchar, float);
-DEF_CVT_SCALE_ABS_FUNC(8s8u, cvtScaleAbs_, schar, uchar, float);
-DEF_CVT_SCALE_ABS_FUNC(16u8u, cvtScaleAbs_, ushort, uchar, float);
-DEF_CVT_SCALE_ABS_FUNC(16s8u, cvtScaleAbs_, short, uchar, float);
-DEF_CVT_SCALE_ABS_FUNC(32s8u, cvtScaleAbs_, int, uchar, float);
-DEF_CVT_SCALE_ABS_FUNC(32f8u, cvtScaleAbs_, float, uchar, float);
-DEF_CVT_SCALE_ABS_FUNC(64f8u, cvtScaleAbs_, double, uchar, float);
+DEF_CVT_SCALE_ABS_FUNC(8u, cvtScaleAbs_, uchar, uchar, float)
+DEF_CVT_SCALE_ABS_FUNC(8s8u, cvtScaleAbs_, schar, uchar, float)
+DEF_CVT_SCALE_ABS_FUNC(16u8u, cvtScaleAbs_, ushort, uchar, float)
+DEF_CVT_SCALE_ABS_FUNC(16s8u, cvtScaleAbs_, short, uchar, float)
+DEF_CVT_SCALE_ABS_FUNC(32s8u, cvtScaleAbs_, int, uchar, float)
+DEF_CVT_SCALE_ABS_FUNC(32f8u, cvtScaleAbs_, float, uchar, float)
+DEF_CVT_SCALE_ABS_FUNC(64f8u, cvtScaleAbs_, double, uchar, float)
 
-DEF_CVT_SCALE_FUNC(8u,     uchar, uchar, float);
-DEF_CVT_SCALE_FUNC(8s8u,   schar, uchar, float);
-DEF_CVT_SCALE_FUNC(16u8u,  ushort, uchar, float);
-DEF_CVT_SCALE_FUNC(16s8u,  short, uchar, float);
-DEF_CVT_SCALE_FUNC(32s8u,  int, uchar, float);
-DEF_CVT_SCALE_FUNC(32f8u,  float, uchar, float);
-DEF_CVT_SCALE_FUNC(64f8u,  double, uchar, float);
+DEF_CVT_SCALE_FUNC(8u,     uchar, uchar, float)
+DEF_CVT_SCALE_FUNC(8s8u,   schar, uchar, float)
+DEF_CVT_SCALE_FUNC(16u8u,  ushort, uchar, float)
+DEF_CVT_SCALE_FUNC(16s8u,  short, uchar, float)
+DEF_CVT_SCALE_FUNC(32s8u,  int, uchar, float)
+DEF_CVT_SCALE_FUNC(32f8u,  float, uchar, float)
+DEF_CVT_SCALE_FUNC(64f8u,  double, uchar, float)
 
-DEF_CVT_SCALE_FUNC(8u8s,   uchar, schar, float);
-DEF_CVT_SCALE_FUNC(8s,     schar, schar, float);
-DEF_CVT_SCALE_FUNC(16u8s,  ushort, schar, float);
-DEF_CVT_SCALE_FUNC(16s8s,  short, schar, float);
-DEF_CVT_SCALE_FUNC(32s8s,  int, schar, float);
-DEF_CVT_SCALE_FUNC(32f8s,  float, schar, float);
-DEF_CVT_SCALE_FUNC(64f8s,  double, schar, float);
+DEF_CVT_SCALE_FUNC(8u8s,   uchar, schar, float)
+DEF_CVT_SCALE_FUNC(8s,     schar, schar, float)
+DEF_CVT_SCALE_FUNC(16u8s,  ushort, schar, float)
+DEF_CVT_SCALE_FUNC(16s8s,  short, schar, float)
+DEF_CVT_SCALE_FUNC(32s8s,  int, schar, float)
+DEF_CVT_SCALE_FUNC(32f8s,  float, schar, float)
+DEF_CVT_SCALE_FUNC(64f8s,  double, schar, float)
 
-DEF_CVT_SCALE_FUNC(8u16u,  uchar, ushort, float);
-DEF_CVT_SCALE_FUNC(8s16u,  schar, ushort, float);
-DEF_CVT_SCALE_FUNC(16u,    ushort, ushort, float);
-DEF_CVT_SCALE_FUNC(16s16u, short, ushort, float);
-DEF_CVT_SCALE_FUNC(32s16u, int, ushort, float);
-DEF_CVT_SCALE_FUNC(32f16u, float, ushort, float);
-DEF_CVT_SCALE_FUNC(64f16u, double, ushort, float);
+DEF_CVT_SCALE_FUNC(8u16u,  uchar, ushort, float)
+DEF_CVT_SCALE_FUNC(8s16u,  schar, ushort, float)
+DEF_CVT_SCALE_FUNC(16u,    ushort, ushort, float)
+DEF_CVT_SCALE_FUNC(16s16u, short, ushort, float)
+DEF_CVT_SCALE_FUNC(32s16u, int, ushort, float)
+DEF_CVT_SCALE_FUNC(32f16u, float, ushort, float)
+DEF_CVT_SCALE_FUNC(64f16u, double, ushort, float)
 
-DEF_CVT_SCALE_FUNC(8u16s,  uchar, short, float);
-DEF_CVT_SCALE_FUNC(8s16s,  schar, short, float);
-DEF_CVT_SCALE_FUNC(16u16s, ushort, short, float);
-DEF_CVT_SCALE_FUNC(16s,    short, short, float);
-DEF_CVT_SCALE_FUNC(32s16s, int, short, float);
-DEF_CVT_SCALE_FUNC(32f16s, float, short, float);
-DEF_CVT_SCALE_FUNC(64f16s, double, short, float);
+DEF_CVT_SCALE_FUNC(8u16s,  uchar, short, float)
+DEF_CVT_SCALE_FUNC(8s16s,  schar, short, float)
+DEF_CVT_SCALE_FUNC(16u16s, ushort, short, float)
+DEF_CVT_SCALE_FUNC(16s,    short, short, float)
+DEF_CVT_SCALE_FUNC(32s16s, int, short, float)
+DEF_CVT_SCALE_FUNC(32f16s, float, short, float)
+DEF_CVT_SCALE_FUNC(64f16s, double, short, float)
 
-DEF_CVT_SCALE_FUNC(8u32s,  uchar, int, float);
-DEF_CVT_SCALE_FUNC(8s32s,  schar, int, float);
-DEF_CVT_SCALE_FUNC(16u32s, ushort, int, float);
-DEF_CVT_SCALE_FUNC(16s32s, short, int, float);
-DEF_CVT_SCALE_FUNC(32s,    int, int, double);
-DEF_CVT_SCALE_FUNC(32f32s, float, int, float);
-DEF_CVT_SCALE_FUNC(64f32s, double, int, double);
+DEF_CVT_SCALE_FUNC(8u32s,  uchar, int, float)
+DEF_CVT_SCALE_FUNC(8s32s,  schar, int, float)
+DEF_CVT_SCALE_FUNC(16u32s, ushort, int, float)
+DEF_CVT_SCALE_FUNC(16s32s, short, int, float)
+DEF_CVT_SCALE_FUNC(32s,    int, int, double)
+DEF_CVT_SCALE_FUNC(32f32s, float, int, float)
+DEF_CVT_SCALE_FUNC(64f32s, double, int, double)
 
-DEF_CVT_SCALE_FUNC(8u32f,  uchar, float, float);
-DEF_CVT_SCALE_FUNC(8s32f,  schar, float, float);
-DEF_CVT_SCALE_FUNC(16u32f, ushort, float, float);
-DEF_CVT_SCALE_FUNC(16s32f, short, float, float);
-DEF_CVT_SCALE_FUNC(32s32f, int, float, double);
-DEF_CVT_SCALE_FUNC(32f,    float, float, float);
-DEF_CVT_SCALE_FUNC(64f32f, double, float, double);
+DEF_CVT_SCALE_FUNC(8u32f,  uchar, float, float)
+DEF_CVT_SCALE_FUNC(8s32f,  schar, float, float)
+DEF_CVT_SCALE_FUNC(16u32f, ushort, float, float)
+DEF_CVT_SCALE_FUNC(16s32f, short, float, float)
+DEF_CVT_SCALE_FUNC(32s32f, int, float, double)
+DEF_CVT_SCALE_FUNC(32f,    float, float, float)
+DEF_CVT_SCALE_FUNC(64f32f, double, float, double)
 
-DEF_CVT_SCALE_FUNC(8u64f,  uchar, double, double);
-DEF_CVT_SCALE_FUNC(8s64f,  schar, double, double);
-DEF_CVT_SCALE_FUNC(16u64f, ushort, double, double);
-DEF_CVT_SCALE_FUNC(16s64f, short, double, double);
-DEF_CVT_SCALE_FUNC(32s64f, int, double, double);
-DEF_CVT_SCALE_FUNC(32f64f, float, double, double);
-DEF_CVT_SCALE_FUNC(64f,    double, double, double);
+DEF_CVT_SCALE_FUNC(8u64f,  uchar, double, double)
+DEF_CVT_SCALE_FUNC(8s64f,  schar, double, double)
+DEF_CVT_SCALE_FUNC(16u64f, ushort, double, double)
+DEF_CVT_SCALE_FUNC(16s64f, short, double, double)
+DEF_CVT_SCALE_FUNC(32s64f, int, double, double)
+DEF_CVT_SCALE_FUNC(32f64f, float, double, double)
+DEF_CVT_SCALE_FUNC(64f,    double, double, double)
 
-DEF_CPY_FUNC(8u,     uchar);
-DEF_CVT_FUNC(8s8u,   schar, uchar);
-DEF_CVT_FUNC(16u8u,  ushort, uchar);
-DEF_CVT_FUNC(16s8u,  short, uchar);
-DEF_CVT_FUNC(32s8u,  int, uchar);
-DEF_CVT_FUNC(32f8u,  float, uchar);
-DEF_CVT_FUNC(64f8u,  double, uchar);
+DEF_CPY_FUNC(8u,     uchar)
+DEF_CVT_FUNC(8s8u,   schar, uchar)
+DEF_CVT_FUNC(16u8u,  ushort, uchar)
+DEF_CVT_FUNC(16s8u,  short, uchar)
+DEF_CVT_FUNC(32s8u,  int, uchar)
+DEF_CVT_FUNC(32f8u,  float, uchar)
+DEF_CVT_FUNC(64f8u,  double, uchar)
 
-DEF_CVT_FUNC(8u8s,   uchar, schar);
-DEF_CVT_FUNC(16u8s,  ushort, schar);
-DEF_CVT_FUNC(16s8s,  short, schar);
-DEF_CVT_FUNC(32s8s,  int, schar);
-DEF_CVT_FUNC(32f8s,  float, schar);
-DEF_CVT_FUNC(64f8s,  double, schar);
+DEF_CVT_FUNC(8u8s,   uchar, schar)
+DEF_CVT_FUNC(16u8s,  ushort, schar)
+DEF_CVT_FUNC(16s8s,  short, schar)
+DEF_CVT_FUNC(32s8s,  int, schar)
+DEF_CVT_FUNC(32f8s,  float, schar)
+DEF_CVT_FUNC(64f8s,  double, schar)
 
-DEF_CVT_FUNC(8u16u,  uchar, ushort);
-DEF_CVT_FUNC(8s16u,  schar, ushort);
-DEF_CPY_FUNC(16u,    ushort);
-DEF_CVT_FUNC(16s16u, short, ushort);
-DEF_CVT_FUNC(32s16u, int, ushort);
-DEF_CVT_FUNC(32f16u, float, ushort);
-DEF_CVT_FUNC(64f16u, double, ushort);
+DEF_CVT_FUNC(8u16u,  uchar, ushort)
+DEF_CVT_FUNC(8s16u,  schar, ushort)
+DEF_CPY_FUNC(16u,    ushort)
+DEF_CVT_FUNC(16s16u, short, ushort)
+DEF_CVT_FUNC(32s16u, int, ushort)
+DEF_CVT_FUNC(32f16u, float, ushort)
+DEF_CVT_FUNC(64f16u, double, ushort)
 
-DEF_CVT_FUNC(8u16s,  uchar, short);
-DEF_CVT_FUNC(8s16s,  schar, short);
-DEF_CVT_FUNC(16u16s, ushort, short);
-DEF_CVT_FUNC(32s16s, int, short);
-DEF_CVT_FUNC(32f16s, float, short);
-DEF_CVT_FUNC(64f16s, double, short);
+DEF_CVT_FUNC(8u16s,  uchar, short)
+DEF_CVT_FUNC(8s16s,  schar, short)
+DEF_CVT_FUNC(16u16s, ushort, short)
+DEF_CVT_FUNC(32s16s, int, short)
+DEF_CVT_FUNC(32f16s, float, short)
+DEF_CVT_FUNC(64f16s, double, short)
 
-DEF_CVT_FUNC(8u32s,  uchar, int);
-DEF_CVT_FUNC(8s32s,  schar, int);
-DEF_CVT_FUNC(16u32s, ushort, int);
-DEF_CVT_FUNC(16s32s, short, int);
-DEF_CPY_FUNC(32s,    int);
-DEF_CVT_FUNC(32f32s, float, int);
-DEF_CVT_FUNC(64f32s, double, int);
+DEF_CVT_FUNC(8u32s,  uchar, int)
+DEF_CVT_FUNC(8s32s,  schar, int)
+DEF_CVT_FUNC(16u32s, ushort, int)
+DEF_CVT_FUNC(16s32s, short, int)
+DEF_CPY_FUNC(32s,    int)
+DEF_CVT_FUNC(32f32s, float, int)
+DEF_CVT_FUNC(64f32s, double, int)
 
-DEF_CVT_FUNC(8u32f,  uchar, float);
-DEF_CVT_FUNC(8s32f,  schar, float);
-DEF_CVT_FUNC(16u32f, ushort, float);
-DEF_CVT_FUNC(16s32f, short, float);
-DEF_CVT_FUNC(32s32f, int, float);
-DEF_CVT_FUNC(64f32f, double, float);
+DEF_CVT_FUNC(8u32f,  uchar, float)
+DEF_CVT_FUNC(8s32f,  schar, float)
+DEF_CVT_FUNC(16u32f, ushort, float)
+DEF_CVT_FUNC(16s32f, short, float)
+DEF_CVT_FUNC(32s32f, int, float)
+DEF_CVT_FUNC(64f32f, double, float)
 
-DEF_CVT_FUNC(8u64f,  uchar, double);
-DEF_CVT_FUNC(8s64f,  schar, double);
-DEF_CVT_FUNC(16u64f, ushort, double);
-DEF_CVT_FUNC(16s64f, short, double);
-DEF_CVT_FUNC(32s64f, int, double);
-DEF_CVT_FUNC(32f64f, float, double);
-DEF_CPY_FUNC(64s,    int64);
+DEF_CVT_FUNC(8u64f,  uchar, double)
+DEF_CVT_FUNC(8s64f,  schar, double)
+DEF_CVT_FUNC(16u64f, ushort, double)
+DEF_CVT_FUNC(16s64f, short, double)
+DEF_CVT_FUNC(32s64f, int, double)
+DEF_CVT_FUNC(32f64f, float, double)
+DEF_CPY_FUNC(64s,    int64)
 
 static BinaryFunc getCvtScaleAbsFunc(int depth)
 {
@@ -1161,10 +1284,49 @@ static BinaryFunc getConvertScaleFunc(int sdepth, int ddepth)
     return cvtScaleTab[CV_MAT_DEPTH(ddepth)][CV_MAT_DEPTH(sdepth)];
 }
 
+static bool ocl_convertScaleAbs( InputArray _src, OutputArray _dst, double alpha, double beta )
+{
+    int type = _src.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type);
+    bool doubleSupport = ocl::Device::getDefault().doubleFPConfig() > 0;
+
+    if (!doubleSupport && depth == CV_64F)
+        return false;
+
+    char cvt[2][50];
+    int wdepth = std::max(depth, CV_32F);
+    ocl::Kernel k("KF", ocl::core::arithm_oclsrc,
+                  format("-D OP_CONVERT_SCALE_ABS -D UNARY_OP -D dstT=uchar -D srcT1=%s"
+                         " -D workT=%s -D convertToWT1=%s -D convertToDT=%s%s",
+                         ocl::typeToStr(depth), ocl::typeToStr(wdepth),
+                         ocl::convertTypeStr(depth, wdepth, 1, cvt[0]),
+                         ocl::convertTypeStr(wdepth, CV_8U, 1, cvt[1]),
+                         doubleSupport ? " -D DOUBLE_SUPPORT" : ""));
+    if (k.empty())
+        return false;
+
+    _dst.createSameSize(_src, CV_8UC(cn));
+    UMat src = _src.getUMat(), dst = _dst.getUMat();
+
+    ocl::KernelArg srcarg = ocl::KernelArg::ReadOnlyNoSize(src),
+            dstarg = ocl::KernelArg::WriteOnly(dst, cn);
+
+    if (wdepth == CV_32F)
+        k.args(srcarg, dstarg, (float)alpha, (float)beta);
+    else if (wdepth == CV_64F)
+        k.args(srcarg, dstarg, alpha, beta);
+
+    size_t globalsize[2] = { src.cols * cn, src.rows };
+    return k.run(2, globalsize, NULL, false);
+}
+
 }
 
 void cv::convertScaleAbs( InputArray _src, OutputArray _dst, double alpha, double beta )
 {
+    if (ocl::useOpenCL() && _src.dims() <= 2 && _dst.isUMat() &&
+            ocl_convertScaleAbs(_src, _dst, alpha, beta))
+        return;
+
     Mat src = _src.getMat();
     int cn = src.channels();
     double scale[] = {alpha, beta};
@@ -1357,43 +1519,65 @@ void cv::LUT( InputArray _src, InputArray _lut, OutputArray _dst )
         func(ptrs[0], lut.data, ptrs[1], len, cn, lutcn);
 }
 
+namespace cv {
+
+static bool ocl_normalize( InputArray _src, OutputArray _dst, InputArray _mask, int rtype,
+                           double scale, double shift )
+{
+    UMat src = _src.getUMat(), dst = _dst.getUMat();
+
+    if( _mask.empty() )
+        src.convertTo( dst, rtype, scale, shift );
+    else
+    {
+        UMat temp;
+        src.convertTo( temp, rtype, scale, shift );
+        temp.copyTo( dst, _mask );
+    }
+
+    return true;
+}
+
+}
 
 void cv::normalize( InputArray _src, OutputArray _dst, double a, double b,
                     int norm_type, int rtype, InputArray _mask )
 {
-    Mat src = _src.getMat(), mask = _mask.getMat();
-
     double scale = 1, shift = 0;
     if( norm_type == CV_MINMAX )
     {
         double smin = 0, smax = 0;
         double dmin = MIN( a, b ), dmax = MAX( a, b );
-        minMaxLoc( _src, &smin, &smax, 0, 0, mask );
+        minMaxLoc( _src, &smin, &smax, 0, 0, _mask );
         scale = (dmax - dmin)*(smax - smin > DBL_EPSILON ? 1./(smax - smin) : 0);
         shift = dmin - smin*scale;
     }
     else if( norm_type == CV_L2 || norm_type == CV_L1 || norm_type == CV_C )
     {
-        scale = norm( src, norm_type, mask );
+        scale = norm( _src, norm_type, _mask );
         scale = scale > DBL_EPSILON ? a/scale : 0.;
         shift = 0;
     }
     else
         CV_Error( CV_StsBadArg, "Unknown/unsupported norm type" );
 
+    int type = _src.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type);
     if( rtype < 0 )
-        rtype = _dst.fixedType() ? _dst.depth() : src.depth();
+        rtype = _dst.fixedType() ? _dst.depth() : depth;
+    _dst.createSameSize(_src, CV_MAKETYPE(rtype, cn));
 
-    _dst.create(src.dims, src.size, CV_MAKETYPE(rtype, src.channels()));
-    Mat dst = _dst.getMat();
+    if (ocl::useOpenCL() && _dst.isUMat() &&
+            ocl_normalize(_src, _dst, _mask, rtype, scale, shift))
+        return;
 
-    if( !mask.data )
+    Mat src = _src.getMat(), dst = _dst.getMat();
+    if( _mask.empty() )
         src.convertTo( dst, rtype, scale, shift );
     else
     {
         Mat temp;
         src.convertTo( temp, rtype, scale, shift );
-        temp.copyTo( dst, mask );
+        temp.copyTo( dst, _mask );
     }
 }
 

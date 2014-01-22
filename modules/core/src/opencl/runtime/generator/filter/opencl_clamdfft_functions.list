@@ -24,7 +24,7 @@ clAmdFftSetPlanDistance
 clAmdFftSetPlanInStride
 //clAmdFftSetPlanLength
 clAmdFftSetPlanOutStride
-//clAmdFftSetPlanPrecision
+clAmdFftSetPlanPrecision
 clAmdFftSetPlanScale
 //clAmdFftSetPlanTransposeResult
 clAmdFftSetResultLocation

@@ -251,16 +251,16 @@ void vBinOp64(const T* src1, size_t step1, const T* src2, size_t step2,
     template <>                                                                                  \
     struct name<template_arg>{                                                                   \
         typedef register_type reg_type;                                                          \
-        static reg_type load(const template_arg * p) { return load_body ((const reg_type *)p);}; \
-        static void store(template_arg * p, reg_type v) { store_body ((reg_type *)p, v);};       \
+        static reg_type load(const template_arg * p) { return load_body ((const reg_type *)p); } \
+        static void store(template_arg * p, reg_type v) { store_body ((reg_type *)p, v); }       \
     }
 
 #define FUNCTOR_LOADSTORE(name, template_arg, register_type, load_body, store_body)\
     template <>                                                                \
     struct name<template_arg>{                                                 \
         typedef register_type reg_type;                                        \
-        static reg_type load(const template_arg * p) { return load_body (p);}; \
-        static void store(template_arg * p, reg_type v) { store_body (p, v);}; \
+        static reg_type load(const template_arg * p) { return load_body (p); } \
+        static void store(template_arg * p, reg_type v) { store_body (p, v); } \
     }
 
 #define FUNCTOR_CLOSURE_2arg(name, template_arg, body)\
@@ -915,11 +915,12 @@ void convertAndUnrollScalar( const Mat& sc, int buftype, uchar* scbuf, size_t bl
 
 enum { OCL_OP_ADD=0, OCL_OP_SUB=1, OCL_OP_RSUB=2, OCL_OP_ABSDIFF=3, OCL_OP_MUL=4,
        OCL_OP_MUL_SCALE=5, OCL_OP_DIV_SCALE=6, OCL_OP_RECIP_SCALE=7, OCL_OP_ADDW=8,
-       OCL_OP_AND=9, OCL_OP_OR=10, OCL_OP_XOR=11, OCL_OP_NOT=12, OCL_OP_MIN=13, OCL_OP_MAX=14 };
+       OCL_OP_AND=9, OCL_OP_OR=10, OCL_OP_XOR=11, OCL_OP_NOT=12, OCL_OP_MIN=13, OCL_OP_MAX=14,
+       OCL_OP_RDIV_SCALE=15 };
 
 static const char* oclop2str[] = { "OP_ADD", "OP_SUB", "OP_RSUB", "OP_ABSDIFF",
     "OP_MUL", "OP_MUL_SCALE", "OP_DIV_SCALE", "OP_RECIP_SCALE",
-    "OP_ADDW", "OP_AND", "OP_OR", "OP_XOR", "OP_NOT", "OP_MIN", "OP_MAX", 0 };
+    "OP_ADDW", "OP_AND", "OP_OR", "OP_XOR", "OP_NOT", "OP_MIN", "OP_MAX", "OP_RDIV_SCALE", 0 };
 
 static bool ocl_binary_op(InputArray _src1, InputArray _src2, OutputArray _dst,
                           InputArray _mask, bool bitwise, int oclop, bool haveScalar )
@@ -1301,25 +1302,27 @@ static bool ocl_arithm_op(InputArray _src1, InputArray _src2, OutputArray _dst,
 
     int kercn = haveMask || haveScalar ? cn : 1;
 
-    char cvtstr[3][32], opts[1024];
+    char cvtstr[4][32], opts[1024];
     sprintf(opts, "-D %s%s -D %s -D srcT1=%s -D srcT2=%s "
-            "-D dstT=%s -D workT=%s -D convertToWT1=%s "
+            "-D dstT=%s -D workT=%s -D scaleT=%s -D convertToWT1=%s "
             "-D convertToWT2=%s -D convertToDT=%s%s",
             (haveMask ? "MASK_" : ""), (haveScalar ? "UNARY_OP" : "BINARY_OP"),
             oclop2str[oclop], ocl::typeToStr(CV_MAKETYPE(depth1, kercn)),
             ocl::typeToStr(CV_MAKETYPE(depth2, kercn)),
             ocl::typeToStr(CV_MAKETYPE(ddepth, kercn)),
             ocl::typeToStr(CV_MAKETYPE(wdepth, kercn)),
+            ocl::typeToStr(CV_MAKETYPE(wdepth, 1)),
             ocl::convertTypeStr(depth1, wdepth, kercn, cvtstr[0]),
             ocl::convertTypeStr(depth2, wdepth, kercn, cvtstr[1]),
             ocl::convertTypeStr(wdepth, ddepth, kercn, cvtstr[2]),
             doubleSupport ? " -D DOUBLE_SUPPORT" : "");
 
+    size_t usrdata_esz = CV_ELEM_SIZE(wdepth);
     const uchar* usrdata_p = (const uchar*)usrdata;
     const double* usrdata_d = (const double*)usrdata;
     float usrdata_f[3];
     int i, n = oclop == OCL_OP_MUL_SCALE || oclop == OCL_OP_DIV_SCALE ||
-        oclop == OCL_OP_RECIP_SCALE ? 1 : oclop == OCL_OP_ADDW ? 3 : 0;
+        oclop == OCL_OP_RDIV_SCALE || oclop == OCL_OP_RECIP_SCALE ? 1 : oclop == OCL_OP_ADDW ? 3 : 0;
     if( n > 0 && wdepth == CV_32F )
     {
         for( i = 0; i < n; i++ )
@@ -1352,13 +1355,20 @@ static bool ocl_arithm_op(InputArray _src1, InputArray _src2, OutputArray _dst,
         ocl::KernelArg scalararg = ocl::KernelArg(0, 0, 0, buf, esz);
 
         if( !haveMask )
-            k.args(src1arg, dstarg, scalararg);
+        {
+            if(n == 0)
+                k.args(src1arg, dstarg, scalararg);
+            else if(n == 1)
+                k.args(src1arg, dstarg, scalararg,
+                       ocl::KernelArg(0, 0, 0, usrdata_p, usrdata_esz));
+            else
+                CV_Error(Error::StsNotImplemented, "unsupported number of extra parameters");
+        }
         else
             k.args(src1arg, maskarg, dstarg, scalararg);
     }
     else
     {
-        size_t usrdata_esz = CV_ELEM_SIZE(wdepth);
         src2 = _src2.getUMat();
         ocl::KernelArg src2arg = ocl::KernelArg::ReadOnlyNoSize(src2, cscale);
 
@@ -1399,7 +1409,7 @@ static void arithm_op(InputArray _src1, InputArray _src2, OutputArray _dst,
     int wtype, dims1 = psrc1->dims(), dims2 = psrc2->dims();
     Size sz1 = dims1 <= 2 ? psrc1->size() : Size();
     Size sz2 = dims2 <= 2 ? psrc2->size() : Size();
-    bool use_opencl = _dst.kind() == _OutputArray::UMAT && ocl::useOpenCL() && dims1 <= 2 && dims2 <= 2;
+    bool use_opencl = _dst.isUMat() && ocl::useOpenCL() && dims1 <= 2 && dims2 <= 2;
     bool src1Scalar = checkScalar(*psrc1, type2, kind1, kind2);
     bool src2Scalar = checkScalar(*psrc2, type1, kind2, kind1);
 
@@ -1424,8 +1434,8 @@ static void arithm_op(InputArray _src1, InputArray _src2, OutputArray _dst,
     bool haveScalar = false, swapped12 = false;
 
     if( dims1 != dims2 || sz1 != sz2 || cn != cn2 ||
-        ((kind1 == _InputArray::MATX || kind2 == _InputArray::MATX) &&
-         (sz1 == Size(1,4) || sz2 == Size(1,4))) )
+        (kind1 == _InputArray::MATX && (sz1 == Size(1,4) || sz1 == Size(1,1))) ||
+        (kind2 == _InputArray::MATX && (sz2 == Size(1,4) || sz2 == Size(1,1))) )
     {
         if( checkScalar(*psrc1, type2, kind1, kind2) )
         {
@@ -1439,6 +1449,8 @@ static void arithm_op(InputArray _src1, InputArray _src2, OutputArray _dst,
             swapped12 = true;
             if( oclop == OCL_OP_SUB )
                 oclop = OCL_OP_RSUB;
+            if ( oclop == OCL_OP_DIV_SCALE )
+                oclop = OCL_OP_RDIV_SCALE;
         }
         else if( !checkScalar(*psrc2, type1, kind2, kind1) )
             CV_Error( CV_StsUnmatchedSizes,
@@ -2865,11 +2877,121 @@ static InRangeFunc getInRangeFunc(int depth)
     return inRangeTab[depth];
 }
 
+static bool ocl_inRange( InputArray _src, InputArray _lowerb,
+                         InputArray _upperb, OutputArray _dst )
+{
+    int skind = _src.kind(), lkind = _lowerb.kind(), ukind = _upperb.kind();
+    Size ssize = _src.size(), lsize = _lowerb.size(), usize = _upperb.size();
+    int stype = _src.type(), ltype = _lowerb.type(), utype = _upperb.type();
+    int sdepth = CV_MAT_DEPTH(stype), ldepth = CV_MAT_DEPTH(ltype), udepth = CV_MAT_DEPTH(utype);
+    int cn = CV_MAT_CN(stype);
+    bool lbScalar = false, ubScalar = false;
+
+    if( (lkind == _InputArray::MATX && skind != _InputArray::MATX) ||
+        ssize != lsize || stype != ltype )
+    {
+        if( !checkScalar(_lowerb, stype, lkind, skind) )
+            CV_Error( CV_StsUnmatchedSizes,
+                     "The lower bounary is neither an array of the same size and same type as src, nor a scalar");
+        lbScalar = true;
+    }
+
+    if( (ukind == _InputArray::MATX && skind != _InputArray::MATX) ||
+        ssize != usize || stype != utype )
+    {
+        if( !checkScalar(_upperb, stype, ukind, skind) )
+            CV_Error( CV_StsUnmatchedSizes,
+                     "The upper bounary is neither an array of the same size and same type as src, nor a scalar");
+        ubScalar = true;
+    }
+
+    if (lbScalar != ubScalar)
+        return false;
+
+    bool doubleSupport = ocl::Device::getDefault().doubleFPConfig() > 0,
+            haveScalar = lbScalar && ubScalar;
+
+    if ( (!doubleSupport && sdepth == CV_64F) ||
+         (!haveScalar && (sdepth != ldepth || sdepth != udepth)) )
+        return false;
+
+    ocl::Kernel ker("inrange", ocl::core::inrange_oclsrc,
+                    format("%s-D cn=%d -D T=%s%s", haveScalar ? "-D HAVE_SCALAR " : "",
+                           cn, ocl::typeToStr(sdepth), doubleSupport ? " -D DOUBLE_SUPPORT" : ""));
+    if (ker.empty())
+        return false;
+
+    _dst.create(ssize, CV_8UC1);
+    UMat src = _src.getUMat(), dst = _dst.getUMat(), lscalaru, uscalaru;
+    Mat lscalar, uscalar;
+
+    if (lbScalar && ubScalar)
+    {
+        lscalar = _lowerb.getMat();
+        uscalar = _upperb.getMat();
+
+        size_t esz = src.elemSize();
+        size_t blocksize = 36;
+
+        AutoBuffer<uchar> _buf(blocksize*(((int)lbScalar + (int)ubScalar)*esz + cn) + 2*cn*sizeof(int) + 128);
+        uchar *buf = alignPtr(_buf + blocksize*cn, 16);
+
+        if( ldepth != sdepth && sdepth < CV_32S )
+        {
+            int* ilbuf = (int*)alignPtr(buf + blocksize*esz, 16);
+            int* iubuf = ilbuf + cn;
+
+            BinaryFunc sccvtfunc = getConvertFunc(ldepth, CV_32S);
+            sccvtfunc(lscalar.data, 0, 0, 0, (uchar*)ilbuf, 0, Size(cn, 1), 0);
+            sccvtfunc(uscalar.data, 0, 0, 0, (uchar*)iubuf, 0, Size(cn, 1), 0);
+            int minval = cvRound(getMinVal(sdepth)), maxval = cvRound(getMaxVal(sdepth));
+
+            for( int k = 0; k < cn; k++ )
+            {
+                if( ilbuf[k] > iubuf[k] || ilbuf[k] > maxval || iubuf[k] < minval )
+                    ilbuf[k] = minval+1, iubuf[k] = minval;
+            }
+            lscalar = Mat(cn, 1, CV_32S, ilbuf);
+            uscalar = Mat(cn, 1, CV_32S, iubuf);
+        }
+
+        lscalar.convertTo(lscalar, stype);
+        uscalar.convertTo(uscalar, stype);
+    }
+    else
+    {
+        lscalaru = _lowerb.getUMat();
+        uscalaru = _upperb.getUMat();
+    }
+
+    ocl::KernelArg srcarg = ocl::KernelArg::ReadOnlyNoSize(src),
+            dstarg = ocl::KernelArg::WriteOnly(dst);
+
+    if (haveScalar)
+    {
+        lscalar.copyTo(lscalaru);
+        uscalar.copyTo(uscalaru);
+
+        ker.args(srcarg, dstarg, ocl::KernelArg::PtrReadOnly(lscalaru),
+               ocl::KernelArg::PtrReadOnly(uscalaru));
+    }
+    else
+        ker.args(srcarg, dstarg, ocl::KernelArg::ReadOnlyNoSize(lscalaru),
+               ocl::KernelArg::ReadOnlyNoSize(uscalaru));
+
+    size_t globalsize[2] = { ssize.width, ssize.height };
+    return ker.run(2, globalsize, NULL, false);
+}
+
 }
 
 void cv::inRange(InputArray _src, InputArray _lowerb,
                  InputArray _upperb, OutputArray _dst)
 {
+    if (ocl::useOpenCL() && _src.dims() <= 2 && _lowerb.dims() <= 2 &&
+            _upperb.dims() <= 2 && _dst.isUMat() && ocl_inRange(_src, _lowerb, _upperb, _dst))
+        return;
+
     int skind = _src.kind(), lkind = _lowerb.kind(), ukind = _upperb.kind();
     Mat src = _src.getMat(), lb = _lowerb.getMat(), ub = _upperb.getMat();
 
@@ -2893,14 +3015,14 @@ void cv::inRange(InputArray _src, InputArray _lowerb,
         ubScalar = true;
     }
 
-    CV_Assert( ((int)lbScalar ^ (int)ubScalar) == 0 );
+    CV_Assert(lbScalar == ubScalar);
 
     int cn = src.channels(), depth = src.depth();
 
     size_t esz = src.elemSize();
     size_t blocksize0 = (size_t)(BLOCK_SIZE + esz-1)/esz;
 
-    _dst.create(src.dims, src.size, CV_8U);
+    _dst.create(src.dims, src.size, CV_8UC1);
     Mat dst = _dst.getMat();
     InRangeFunc func = getInRangeFunc(depth);
 

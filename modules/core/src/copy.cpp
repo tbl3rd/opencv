@@ -166,16 +166,16 @@ static void copyMask##suffix(const uchar* src, size_t sstep, const uchar* mask, 
 }
 
 
-DEF_COPY_MASK(8u, uchar);
-DEF_COPY_MASK(16u, ushort);
-DEF_COPY_MASK(8uC3, Vec3b);
-DEF_COPY_MASK(32s, int);
-DEF_COPY_MASK(16uC3, Vec3s);
-DEF_COPY_MASK(32sC2, Vec2i);
-DEF_COPY_MASK(32sC3, Vec3i);
-DEF_COPY_MASK(32sC4, Vec4i);
-DEF_COPY_MASK(32sC6, Vec6i);
-DEF_COPY_MASK(32sC8, Vec8i);
+DEF_COPY_MASK(8u, uchar)
+DEF_COPY_MASK(16u, ushort)
+DEF_COPY_MASK(8uC3, Vec3b)
+DEF_COPY_MASK(32s, int)
+DEF_COPY_MASK(16uC3, Vec3s)
+DEF_COPY_MASK(32sC2, Vec2i)
+DEF_COPY_MASK(32sC3, Vec3i)
+DEF_COPY_MASK(32sC4, Vec4i)
+DEF_COPY_MASK(32sC6, Vec6i)
+DEF_COPY_MASK(32sC8, Vec8i)
 
 BinaryFunc copyMaskTab[] =
 {
@@ -247,10 +247,7 @@ void Mat::copyTo( OutputArray _dst ) const
             const uchar* sptr = data;
             uchar* dptr = dst.data;
 
-            // to handle the copying 1xn matrix => nx1 std vector.
-            Size sz = size() == dst.size() ?
-                getContinuousSize(*this, dst) :
-                getContinuousSize(*this);
+            Size sz = getContinuousSize(*this, dst);
             size_t len = sz.width*elemSize();
 
             for( ; sz.height--; sptr += step, dptr += dst.step )
@@ -301,6 +298,7 @@ void Mat::copyTo( OutputArray _dst, InputArray _mask ) const
 
     if( dims <= 2 )
     {
+        CV_Assert( size() == mask.size() );
         Size sz = getContinuousSize(*this, dst, mask, mcn);
         copymask(data, step, mask.data, mask.step, dst.data, dst.step, sz, &esz);
         return;
@@ -544,15 +542,36 @@ void flip( InputArray _src, OutputArray _dst, int flip_mode )
 }
 
 
+static bool ocl_repeat(InputArray _src, int ny, int nx, OutputArray _dst)
+{
+    UMat src = _src.getUMat(), dst = _dst.getUMat();
+
+    for (int y = 0; y < ny; ++y)
+        for (int x = 0; x < nx; ++x)
+        {
+            Rect roi(x * src.cols, y * src.rows, src.cols, src.rows);
+            UMat hdr(dst, roi);
+            src.copyTo(hdr);
+        }
+    return true;
+}
+
 void repeat(InputArray _src, int ny, int nx, OutputArray _dst)
 {
-    Mat src = _src.getMat();
-    CV_Assert( src.dims <= 2 );
+    CV_Assert( _src.dims() <= 2 );
     CV_Assert( ny > 0 && nx > 0 );
 
-    _dst.create(src.rows*ny, src.cols*nx, src.type());
-    Mat dst = _dst.getMat();
-    Size ssize = src.size(), dsize = dst.size();
+    Size ssize = _src.size();
+    _dst.create(ssize.height*ny, ssize.width*nx, _src.type());
+
+    if (ocl::useOpenCL() && _src.isUMat())
+    {
+        CV_Assert(ocl_repeat(_src, ny, nx, _dst));
+        return;
+    }
+
+    Mat src = _src.getMat(), dst = _dst.getMat();
+    Size dsize = dst.size();
     int esz = (int)src.elemSize();
     int x, y;
     ssize.width *= esz; dsize.width *= esz;

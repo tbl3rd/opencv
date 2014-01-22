@@ -952,7 +952,7 @@ public:
  */
     CV_WRAP virtual int compareSegments(const Size& size, InputArray lines1, InputArray lines2, InputOutputArray _image = noArray()) = 0;
 
-    virtual ~LineSegmentDetector() {};
+    virtual ~LineSegmentDetector() { }
 };
 
 //! Returns a pointer to a LineSegmentDetector class.
@@ -1075,6 +1075,11 @@ CV_EXPORTS_W void boxFilter( InputArray src, OutputArray dst, int ddepth,
                              Size ksize, Point anchor = Point(-1,-1),
                              bool normalize = true,
                              int borderType = BORDER_DEFAULT );
+
+CV_EXPORTS_W void sqrBoxFilter( InputArray _src, OutputArray _dst, int ddepth,
+                                Size ksize, Point anchor = Point(-1, -1),
+                                bool normalize = true,
+                                int borderType = BORDER_DEFAULT );
 
 //! a synonym for normalized box filter
 CV_EXPORTS_W void blur( InputArray src, OutputArray dst,

@@ -56,7 +56,10 @@ void MatAllocator::map(UMatData*, int) const
 void MatAllocator::unmap(UMatData* u) const
 {
     if(u->urefcount == 0 && u->refcount == 0)
+    {
         deallocate(u);
+        u = NULL;
+    }
 }
 
 void MatAllocator::download(UMatData* u, void* dstptr,
@@ -134,11 +137,11 @@ void MatAllocator::copy(UMatData* usrc, UMatData* udst, int dims, const size_t s
     {
         CV_Assert( sz[i] <= (size_t)INT_MAX );
         if( sz[i] == 0 )
-        return;
+            return;
         if( srcofs )
-        srcptr += srcofs[i]*(i <= dims-2 ? srcstep[i] : 1);
+            srcptr += srcofs[i]*(i <= dims-2 ? srcstep[i] : 1);
         if( dstofs )
-        dstptr += dstofs[i]*(i <= dims-2 ? dststep[i] : 1);
+            dstptr += dstofs[i]*(i <= dims-2 ? dststep[i] : 1);
         isz[i] = (int)sz[i];
     }
 
@@ -179,7 +182,6 @@ public:
         UMatData* u = new UMatData(this);
         u->data = u->origdata = data;
         u->size = total;
-        u->refcount = data0 == 0;
         if(data0)
             u->flags |= UMatData::USER_ALLOCATED;
 
@@ -195,6 +197,8 @@ public:
 
     void deallocate(UMatData* u) const
     {
+        CV_Assert(u->urefcount >= 0);
+        CV_Assert(u->refcount >= 0);
         if(u && u->refcount == 0)
         {
             if( !(u->flags & UMatData::USER_ALLOCATED) )
@@ -392,6 +396,7 @@ void Mat::create(int d, const int* _sizes, int _type)
         CV_Assert( step[dims-1] == (size_t)CV_ELEM_SIZE(flags) );
     }
 
+    addref();
     finalizeHdr(*this);
 }
 
@@ -409,6 +414,7 @@ void Mat::deallocate()
 {
     if(u)
         (u->currAllocator ? u->currAllocator : allocator ? allocator : getStdAllocator())->unmap(u);
+    u = NULL;
 }
 
 Mat::Mat(const Mat& m, const Range& _rowRange, const Range& _colRange)
@@ -1424,6 +1430,16 @@ Size _InputArray::size(int i) const
         return vv[i].size();
     }
 
+    if( k == STD_VECTOR_UMAT )
+    {
+        const std::vector<UMat>& vv = *(const std::vector<UMat>*)obj;
+        if( i < 0 )
+            return vv.empty() ? Size() : Size((int)vv.size(), 1);
+        CV_Assert( i < (int)vv.size() );
+
+        return vv[i].size();
+    }
+
     if( k == OPENGL_BUFFER )
     {
         CV_Assert( i < 0 );
@@ -1789,6 +1805,37 @@ bool _InputArray::isContinuous(int i) const
     }
 
     CV_Error(CV_StsNotImplemented, "This method is not implemented for oclMat yet");
+    return false;
+}
+
+bool _InputArray::isSubmatrix(int i) const
+{
+    int k = kind();
+
+    if( k == MAT )
+        return i < 0 ? ((const Mat*)obj)->isSubmatrix() : false;
+
+    if( k == UMAT )
+        return i < 0 ? ((const UMat*)obj)->isSubmatrix() : false;
+
+    if( k == EXPR || k == MATX || k == STD_VECTOR || k == NONE || k == STD_VECTOR_VECTOR)
+        return false;
+
+    if( k == STD_VECTOR_MAT )
+    {
+        const std::vector<Mat>& vv = *(const std::vector<Mat>*)obj;
+        CV_Assert((size_t)i < vv.size());
+        return vv[i].isSubmatrix();
+    }
+
+    if( k == STD_VECTOR_UMAT )
+    {
+        const std::vector<UMat>& vv = *(const std::vector<UMat>*)obj;
+        CV_Assert((size_t)i < vv.size());
+        return vv[i].isSubmatrix();
+    }
+
+    CV_Error(CV_StsNotImplemented, "");
     return false;
 }
 
@@ -2256,6 +2303,12 @@ void _OutputArray::release() const
         return;
     }
 
+    if( k == UMAT )
+    {
+        ((UMat*)obj)->release();
+        return;
+    }
+
     if( k == GPU_MAT )
     {
         ((cuda::GpuMat*)obj)->release();
@@ -2292,6 +2345,12 @@ void _OutputArray::release() const
     if( k == STD_VECTOR_MAT )
     {
         ((std::vector<Mat>*)obj)->clear();
+        return;
+    }
+
+    if( k == STD_VECTOR_UMAT )
+    {
+        ((std::vector<UMat>*)obj)->clear();
         return;
     }
 
@@ -2754,39 +2813,24 @@ void cv::transpose( InputArray _src, OutputArray _dst )
 }
 
 
+////////////////////////////////////// completeSymm /////////////////////////////////////////
+
 void cv::completeSymm( InputOutputArray _m, bool LtoR )
 {
     Mat m = _m.getMat();
-    CV_Assert( m.dims <= 2 );
+    size_t step = m.step, esz = m.elemSize();
+    CV_Assert( m.dims <= 2 && m.rows == m.cols );
 
-    int i, j, nrows = m.rows, type = m.type();
-    int j0 = 0, j1 = nrows;
-    CV_Assert( m.rows == m.cols );
+    int rows = m.rows;
+    int j0 = 0, j1 = rows;
 
-    if( type == CV_32FC1 || type == CV_32SC1 )
+    uchar* data = m.data;
+    for( int i = 0; i < rows; i++ )
     {
-        int* data = (int*)m.data;
-        size_t step = m.step/sizeof(data[0]);
-        for( i = 0; i < nrows; i++ )
-        {
-            if( !LtoR ) j1 = i; else j0 = i+1;
-            for( j = j0; j < j1; j++ )
-                data[i*step + j] = data[j*step + i];
-        }
+        if( !LtoR ) j1 = i; else j0 = i+1;
+        for( int j = j0; j < j1; j++ )
+            memcpy(data + (i*step + j*esz), data + (j*step + i*esz), esz);
     }
-    else if( type == CV_64FC1 )
-    {
-        double* data = (double*)m.data;
-        size_t step = m.step/sizeof(data[0]);
-        for( i = 0; i < nrows; i++ )
-        {
-            if( !LtoR ) j1 = i; else j0 = i+1;
-            for( j = j0; j < j1; j++ )
-                data[i*step + j] = data[j*step + i];
-        }
-    }
-    else
-        CV_Error( CV_StsUnsupportedFormat, "" );
 }
 
 
@@ -2963,23 +3007,80 @@ typedef void (*ReduceFunc)( const Mat& src, Mat& dst );
 #define reduceMinC32f reduceC_<float, float, OpMin<float> >
 #define reduceMinC64f reduceC_<double,double,OpMin<double> >
 
+namespace cv {
+
+static bool ocl_reduce(InputArray _src, OutputArray _dst,
+                       int dim, int op, int op0, int stype, int dtype)
+{
+    int sdepth = CV_MAT_DEPTH(stype), cn = CV_MAT_CN(stype),
+            ddepth = CV_MAT_DEPTH(dtype), ddepth0 = ddepth;
+    bool doubleSupport = ocl::Device::getDefault().doubleFPConfig() > 0;
+
+    if (!doubleSupport && (sdepth == CV_64F || ddepth == CV_64F))
+        return false;
+
+    if (op == CV_REDUCE_AVG)
+    {
+        op = CV_REDUCE_SUM;
+        if (sdepth < CV_32S && ddepth < CV_32S)
+            ddepth = CV_32S;
+    }
+
+    const char * const ops[4] = { "OCL_CV_REDUCE_SUM", "OCL_CV_REDUCE_AVG",
+                                  "OCL_CV_REDUCE_MAX", "OCL_CV_REDUCE_MIN" };
+    char cvt[40];
+    ocl::Kernel k("reduce", ocl::core::reduce2_oclsrc,
+                  format("-D %s -D dim=%d -D cn=%d -D ddepth=%d -D srcT=%s -D dstT=%s -D convertToDT=%s%s",
+                         ops[op], dim, cn, ddepth, ocl::typeToStr(sdepth), ocl::typeToStr(ddepth),
+                         ocl::convertTypeStr(sdepth, ddepth, 1, cvt),
+                         doubleSupport ? " -D DOUBLE_SUPPORT" : ""));
+    if (k.empty())
+        return false;
+
+    UMat src = _src.getUMat();
+    Size dsize(dim == 0 ? src.cols : 1, dim == 0 ? 1 : src.rows);
+    _dst.create(dsize, dtype);
+    UMat dst = _dst.getUMat(), temp = dst;
+
+    if (op0 == CV_REDUCE_AVG && sdepth < CV_32S && ddepth0 < CV_32S)
+        temp.create(dsize, CV_32SC(cn));
+
+    size_t globalsize = std::max(dsize.width, dsize.height);
+
+    k.args(ocl::KernelArg::ReadOnly(src),
+           ocl::KernelArg::WriteOnlyNoSize(temp));
+    if (!k.run(1, &globalsize, NULL, false))
+        return false;
+
+    if (op0 == CV_REDUCE_AVG)
+        temp.convertTo(dst, ddepth0, 1. / (dim == 0 ? src.rows : src.cols));
+
+    return true;
+}
+
+}
+
 void cv::reduce(InputArray _src, OutputArray _dst, int dim, int op, int dtype)
 {
-    Mat src = _src.getMat();
-    CV_Assert( src.dims <= 2 );
+    CV_Assert( _src.dims() <= 2 );
     int op0 = op;
-    int stype = src.type(), sdepth = src.depth(), cn = src.channels();
+    int stype = _src.type(), sdepth = CV_MAT_DEPTH(stype), cn = CV_MAT_CN(stype);
     if( dtype < 0 )
         dtype = _dst.fixedType() ? _dst.type() : stype;
+    dtype = CV_MAKETYPE(dtype >= 0 ? dtype : stype, cn);
     int ddepth = CV_MAT_DEPTH(dtype);
 
-    _dst.create(dim == 0 ? 1 : src.rows, dim == 0 ? src.cols : 1,
-                CV_MAKETYPE(dtype >= 0 ? dtype : stype, cn));
-    Mat dst = _dst.getMat(), temp = dst;
-
+    CV_Assert( cn == CV_MAT_CN(dtype) );
     CV_Assert( op == CV_REDUCE_SUM || op == CV_REDUCE_MAX ||
                op == CV_REDUCE_MIN || op == CV_REDUCE_AVG );
-    CV_Assert( src.channels() == dst.channels() );
+
+    if (ocl::useOpenCL() && _dst.isUMat() &&
+            ocl_reduce(_src, _dst, dim, op, op0, stype, dtype))
+        return;
+
+    Mat src = _src.getMat();
+    _dst.create(dim == 0 ? 1 : src.rows, dim == 0 ? src.cols : 1, dtype);
+    Mat dst = _dst.getMat(), temp = dst;
 
     if( op == CV_REDUCE_AVG )
     {
