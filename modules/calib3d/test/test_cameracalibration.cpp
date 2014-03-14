@@ -480,7 +480,7 @@ void CV_CameraCalibrationTest::run( int start_from )
         values_read = fscanf(file,"%lf",goodDistortion+2); CV_Assert(values_read == 1);
         values_read = fscanf(file,"%lf",goodDistortion+3); CV_Assert(values_read == 1);
 
-        /* Read good Rot matrixes */
+        /* Read good Rot matrices */
         for( currImage = 0; currImage < numImages; currImage++ )
         {
             for( i = 0; i < 3; i++ )
@@ -1393,6 +1393,7 @@ void CV_StereoCalibrationTest::run( int )
         {
             ts->printf( cvtest::TS::LOG, "The file %s can not be opened or has invalid content\n", filepath.c_str() );
             ts->set_failed_test_info( f ? cvtest::TS::FAIL_INVALID_TEST_DATA : cvtest::TS::FAIL_MISSING_TEST_DATA );
+            fclose(f);
             return;
         }
 
@@ -1733,7 +1734,7 @@ double CV_StereoCalibrationTest_C::calibrateStereoCamera( const vector<vector<Po
 
     return cvStereoCalibrate(&_objPt, &_imgPt, &_imgPt2, &_npoints, &_cameraMatrix1,
         &_distCoeffs1, &_cameraMatrix2, &_distCoeffs2, imageSize,
-        &matR, &matT, &matE, &matF, criteria, flags );
+        &matR, &matT, &matE, &matF, flags, criteria );
 }
 
 void CV_StereoCalibrationTest_C::rectify( const Mat& cameraMatrix1, const Mat& distCoeffs1,
@@ -1830,7 +1831,7 @@ double CV_StereoCalibrationTest_CPP::calibrateStereoCamera( const vector<vector<
 {
     return stereoCalibrate( objectPoints, imagePoints1, imagePoints2,
                     cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2,
-                    imageSize, R, T, E, F, criteria, flags );
+                    imageSize, R, T, E, F, flags, criteria );
 }
 
 void CV_StereoCalibrationTest_CPP::rectify( const Mat& cameraMatrix1, const Mat& distCoeffs1,

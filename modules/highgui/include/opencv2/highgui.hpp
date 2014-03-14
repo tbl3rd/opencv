@@ -389,9 +389,17 @@ enum { CAP_PROP_GSTREAMER_QUEUE_LENGTH = 200 // default is 1
 
 
 // PVAPI
-enum { CAP_PROP_PVAPI_MULTICASTIP = 300 // ip for anable multicast master mode. 0 for disable multicast
+enum { CAP_PROP_PVAPI_MULTICASTIP               = 300, // ip for anable multicast master mode. 0 for disable multicast
+       CAP_PROP_PVAPI_FRAMESTARTTRIGGERMODE     = 301  // FrameStartTriggerMode: Determines how a frame is initiated
      };
 
+// PVAPI: FrameStartTriggerMode
+enum { CAP_PVAPI_FSTRIGMODE_FREERUN     = 0,    // Freerun
+       CAP_PVAPI_FSTRIGMODE_SYNCIN1     = 1,    // SyncIn1
+       CAP_PVAPI_FSTRIGMODE_SYNCIN2     = 2,    // SyncIn2
+       CAP_PVAPI_FSTRIGMODE_FIXEDRATE   = 3,    // FixedRate
+       CAP_PVAPI_FSTRIGMODE_SOFTWARE    = 4     // Software
+     };
 
 // Properties of cameras available through XIMEA SDK interface
 enum { CAP_PROP_XI_DOWNSAMPLING  = 400, // Change image resolution by binning or skipping.
@@ -522,6 +530,8 @@ enum { CAP_INTELPERC_DEPTH_MAP              = 0, // Each pixel is a 16-bit integ
        CAP_INTELPERC_IMAGE                  = 3
      };
 
+
+class IVideoCapture;
 class CV_EXPORTS_W VideoCapture
 {
 public:
@@ -546,8 +556,10 @@ public:
 
 protected:
     Ptr<CvCapture> cap;
+    Ptr<IVideoCapture> icap;
+private:
+    static Ptr<IVideoCapture> createCameraCapture(int index);
 };
-
 
 class CV_EXPORTS_W VideoWriter
 {

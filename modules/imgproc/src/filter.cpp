@@ -1405,7 +1405,11 @@ struct SymmColumnVec_32f16s
 
 struct RowVec_32f
 {
-    RowVec_32f() {}
+    RowVec_32f()
+    {
+        haveSSE = checkHardwareSupport(CV_CPU_SSE);
+    }
+
     RowVec_32f( const Mat& _kernel )
     {
         kernel = _kernel;
@@ -3115,10 +3119,7 @@ template<typename ST, class CastOp, class VecOp> struct Filter2D : public BaseFi
     VecOp vecOp;
 };
 
-}
-
-namespace cv
-{
+#ifdef HAVE_OPENCL
 
 #define DIVUP(total, grain) (((total) + (grain) - 1) / (grain))
 #define ROUNDUP(sz, n)      ((sz) + (n) - 1 - (((sz) + (n) - 1) % (n)))
@@ -3381,6 +3382,7 @@ static bool ocl_sepRowFilter2D( UMat &src, UMat &buf, Mat &kernelX, int anchor, 
         btype,
         extra_extrapolation ? "EXTRA_EXTRAPOLATION" : "NO_EXTRA_EXTRAPOLATION",
         isIsolatedBorder ? "BORDER_ISOLATED" : "NO_BORDER_ISOLATED");
+    build_options += ocl::kernelToStr(kernelX, CV_32F);
 
     Size srcWholeSize; Point srcOffset;
     src.locateROI(srcWholeSize, srcOffset);
@@ -3393,7 +3395,8 @@ static bool ocl_sepRowFilter2D( UMat &src, UMat &buf, Mat &kernelX, int anchor, 
         strKernel << "_D" << sdepth;
 
     ocl::Kernel kernelRow;
-    if (!kernelRow.create(strKernel.str().c_str(), cv::ocl::imgproc::filterSepRow_oclsrc, build_options))
+    if (!kernelRow.create(strKernel.str().c_str(), cv::ocl::imgproc::filterSepRow_oclsrc,
+                          build_options))
         return false;
 
     int idxArg = 0;
@@ -3412,12 +3415,11 @@ static bool ocl_sepRowFilter2D( UMat &src, UMat &buf, Mat &kernelX, int anchor, 
     idxArg = kernelRow.set(idxArg, buf.cols);
     idxArg = kernelRow.set(idxArg, buf.rows);
     idxArg = kernelRow.set(idxArg, radiusY);
-    idxArg = kernelRow.set(idxArg, ocl::KernelArg::PtrReadOnly(kernelX.getUMat(ACCESS_READ)));
 
     return kernelRow.run(2, globalsize, localsize, sync);
 }
 
-static bool ocl_sepColFilter2D(UMat &buf, UMat &dst, Mat &kernelY, int anchor, bool sync)
+static bool ocl_sepColFilter2D(const UMat &buf, UMat &dst, Mat &kernelY, int anchor, bool sync)
 {
 #ifdef ANDROID
     size_t localsize[2] = {16, 10};
@@ -3426,61 +3428,21 @@ static bool ocl_sepColFilter2D(UMat &buf, UMat &dst, Mat &kernelY, int anchor, b
 #endif
     size_t globalsize[2] = {0, 0};
 
-    int type = dst.type();
-    int cn = CV_MAT_CN(type);
-    int ddepth = CV_MAT_DEPTH(type);
+    int dtype = dst.type(), cn = CV_MAT_CN(dtype), ddepth = CV_MAT_DEPTH(dtype);
     Size sz = dst.size();
 
     globalsize[1] = DIVUP(sz.height, localsize[1]) * localsize[1];
 
-    cv::String build_options;
-    if (CV_8U == ddepth)
-    {
-        switch (cn)
-        {
-        case 1:
-            globalsize[0] = DIVUP(sz.width, localsize[0]) * localsize[0];
-            build_options = cv::format("-D RADIUSY=%d -D LSIZE0=%d -D LSIZE1=%d -D CN=%d -D GENTYPE_SRC=%s -D GENTYPE_DST=%s -D convert_to_DST=%s",
-                    anchor, (int)localsize[0], (int)localsize[1], cn, "float", "uchar", "convert_uchar_sat");
-            break;
-        case 2:
-            globalsize[0] = DIVUP((sz.width + 1) / 2, localsize[0]) * localsize[0];
-            build_options = cv::format("-D RADIUSY=%d -D LSIZE0=%d -D LSIZE1=%d -D CN=%d -D GENTYPE_SRC=%s -D GENTYPE_DST=%s -D convert_to_DST=%s",
-                    anchor, (int)localsize[0], (int)localsize[1], cn, "float2", "uchar2", "convert_uchar2_sat");
-            break;
-        case 3:
-        case 4:
-            globalsize[0] = DIVUP(sz.width, localsize[0]) * localsize[0];
-            build_options = cv::format("-D RADIUSY=%d -D LSIZE0=%d -D LSIZE1=%d -D CN=%d -D GENTYPE_SRC=%s -D GENTYPE_DST=%s -D convert_to_DST=%s",
-                    anchor, (int)localsize[0], (int)localsize[1], cn, "float4", "uchar4", "convert_uchar4_sat");
-            break;
-        }
-    }
+    if (dtype == CV_8UC2)
+        globalsize[0] = DIVUP((sz.width + 1) / 2, localsize[0]) * localsize[0];
     else
-    {
         globalsize[0] = DIVUP(sz.width, localsize[0]) * localsize[0];
-        switch (dst.type())
-        {
-        case CV_32SC1:
-            build_options = cv::format("-D RADIUSY=%d -D LSIZE0=%d -D LSIZE1=%d -D CN=%d -D GENTYPE_SRC=%s -D GENTYPE_DST=%s -D convert_to_DST=%s",
-                    anchor, (int)localsize[0], (int)localsize[1], cn, "float", "int", "convert_int_sat");
-            break;
-        case CV_32SC3:
-        case CV_32SC4:
-            build_options = cv::format("-D RADIUSY=%d -D LSIZE0=%d -D LSIZE1=%d -D CN=%d -D GENTYPE_SRC=%s -D GENTYPE_DST=%s -D convert_to_DST=%s",
-                    anchor, (int)localsize[0], (int)localsize[1], cn, "float4", "int4", "convert_int4_sat");
-            break;
-        case CV_32FC1:
-            build_options = cv::format("-D RADIUSY=%d -D LSIZE0=%d -D LSIZE1=%d -D CN=%d -D GENTYPE_SRC=%s -D GENTYPE_DST=%s -D convert_to_DST=%s",
-                    anchor, (int)localsize[0], (int)localsize[1], cn, "float", "float", "");
-            break;
-        case CV_32FC3:
-        case CV_32FC4:
-            build_options = cv::format("-D RADIUSY=%d -D LSIZE0=%d -D LSIZE1=%d -D CN=%d -D GENTYPE_SRC=%s -D GENTYPE_DST=%s -D convert_to_DST=%s",
-                    anchor, (int)localsize[0], (int)localsize[1], cn, "float4", "float4", "");
-            break;
-        }
-    }
+
+    char cvt[40];
+    cv::String build_options = cv::format("-D RADIUSY=%d -D LSIZE0=%d -D LSIZE1=%d -D CN=%d -D GENTYPE_SRC=%s -D GENTYPE_DST=%s -D convert_to_DST=%s",
+                    anchor, (int)localsize[0], (int)localsize[1], cn, ocl::typeToStr(buf.type()),
+                                          ocl::typeToStr(dtype), ocl::convertTypeStr(CV_32F, ddepth, cn, cvt));
+    build_options += ocl::kernelToStr(kernelY, CV_32F);
 
     ocl::Kernel kernelCol;
     if (!kernelCol.create("col_filter", cv::ocl::imgproc::filterSepCol_oclsrc, build_options))
@@ -3497,7 +3459,6 @@ static bool ocl_sepColFilter2D(UMat &buf, UMat &dst, Mat &kernelY, int anchor, b
     idxArg = kernelCol.set(idxArg, (int)(dst.step / dst.elemSize()));
     idxArg = kernelCol.set(idxArg, dst.cols);
     idxArg = kernelCol.set(idxArg, dst.rows);
-    idxArg = kernelCol.set(idxArg, ocl::KernelArg::PtrReadOnly(kernelY.getUMat(ACCESS_READ)));
 
     return kernelCol.run(2, globalsize, localsize, sync);
 }
@@ -3510,8 +3471,8 @@ static bool ocl_sepFilter2D( InputArray _src, OutputArray _dst, int ddepth,
         return false;
 
     int type = _src.type();
-    if ( !( (CV_8UC1 == type || CV_8UC4 == type || CV_32FC1 == type || CV_32FC4 == type) &&
-            (ddepth == CV_32F || ddepth == CV_8U) ) )
+    if ( !( (type == CV_8UC1 || type == CV_8UC4 || type == CV_32FC1 || type == CV_32FC4) &&
+            (ddepth == CV_32F || ddepth == CV_16S || ddepth == CV_8U || ddepth < 0) ) )
         return false;
 
     int cn = CV_MAT_CN(type);
@@ -3544,13 +3505,16 @@ static bool ocl_sepFilter2D( InputArray _src, OutputArray _dst, int ddepth,
     Size srcSize = src.size();
     Size bufSize(srcSize.width, srcSize.height + kernelY.cols - 1);
     UMat buf; buf.create(bufSize, CV_MAKETYPE(CV_32F, cn));
-    if (!ocl_sepRowFilter2D(src, buf, kernelX, anchor.x, borderType, true))
+    if (!ocl_sepRowFilter2D(src, buf, kernelX, anchor.x, borderType, false))
         return false;
 
     _dst.create(srcSize, CV_MAKETYPE(ddepth, cn));
     UMat dst = _dst.getUMat();
-    return ocl_sepColFilter2D(buf, dst, kernelY, anchor.y, true);
+    return ocl_sepColFilter2D(buf, dst, kernelY, anchor.y, false);
 }
+
+#endif
+
 }
 
 cv::Ptr<cv::BaseFilter> cv::getLinearFilter(int srcType, int dstType,
@@ -3668,9 +3632,8 @@ void cv::filter2D( InputArray _src, OutputArray _dst, int ddepth,
                    InputArray _kernel, Point anchor,
                    double delta, int borderType )
 {
-    bool use_opencl = ocl::useOpenCL() && _dst.isUMat();
-    if( use_opencl && ocl_filter2D(_src, _dst, ddepth, _kernel, anchor, delta, borderType))
-        return;
+    CV_OCL_RUN(_dst.isUMat() && _src.dims() <= 2,
+               ocl_filter2D(_src, _dst, ddepth, _kernel, anchor, delta, borderType))
 
     Mat src = _src.getMat(), kernel = _kernel.getMat();
 
@@ -3718,9 +3681,8 @@ void cv::sepFilter2D( InputArray _src, OutputArray _dst, int ddepth,
                       InputArray _kernelX, InputArray _kernelY, Point anchor,
                       double delta, int borderType )
 {
-    bool use_opencl = ocl::useOpenCL() && _dst.isUMat();
-    if (use_opencl && ocl_sepFilter2D(_src, _dst, ddepth, _kernelX, _kernelY, anchor, delta, borderType))
-        return;
+    CV_OCL_RUN(_dst.isUMat() && _src.dims() <= 2,
+               ocl_sepFilter2D(_src, _dst, ddepth, _kernelX, _kernelY, anchor, delta, borderType))
 
     Mat src = _src.getMat(), kernelX = _kernelX.getMat(), kernelY = _kernelY.getMat();
 

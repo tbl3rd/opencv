@@ -1500,7 +1500,8 @@ class PlanCache
     {
         FftPlan(const Size & _dft_size, int _src_step, int _dst_step, bool _doubleFP, bool _inplace, int _flags, FftType _fftType) :
             dft_size(_dft_size), src_step(_src_step), dst_step(_dst_step),
-            doubleFP(_doubleFP), inplace(_inplace), flags(_flags), fftType(_fftType), plHandle(0)
+            doubleFP(_doubleFP), inplace(_inplace), flags(_flags), fftType(_fftType),
+            context((cl_context)ocl::Context::getDefault().ptr()), plHandle(0)
         {
             bool dft_inverse = (flags & DFT_INVERSE) != 0;
             bool dft_scale = (flags & DFT_SCALE) != 0;
@@ -1544,8 +1545,7 @@ class PlanCache
             clStridesIn[2] = dft_rows ? clStridesIn[1] : dft_size.width * clStridesIn[1];
             clStridesOut[2] = dft_rows ? clStridesOut[1] : dft_size.width * clStridesOut[1];
 
-            // TODO remove all plans if context changed
-            CLAMDDFT_Assert(clAmdFftCreateDefaultPlan(&plHandle, (cl_context)ocl::Context2::getDefault().ptr(), dim, clLengthsIn))
+            CLAMDDFT_Assert(clAmdFftCreateDefaultPlan(&plHandle, (cl_context)ocl::Context::getDefault().ptr(), dim, clLengthsIn))
 
             // setting plan properties
             CLAMDDFT_Assert(clAmdFftSetPlanPrecision(plHandle, doubleFP ? CLFFT_DOUBLE : CLFFT_SINGLE));
@@ -1560,8 +1560,8 @@ class PlanCache
             CLAMDDFT_Assert(clAmdFftSetPlanScale(plHandle, dft_inverse ? CLFFT_BACKWARD : CLFFT_FORWARD, scale))
 
             // ready to bake
-            cl_command_queue commandQueue = (cl_command_queue)ocl::Queue::getDefault().ptr();
-            CLAMDDFT_Assert(clAmdFftBakePlan(plHandle, 1, &commandQueue, NULL, NULL))
+            cl_command_queue queue = (cl_command_queue)ocl::Queue::getDefault().ptr();
+            CLAMDDFT_Assert(clAmdFftBakePlan(plHandle, 1, &queue, NULL, NULL))
         }
 
         ~FftPlan()
@@ -1593,11 +1593,12 @@ public:
     clAmdFftPlanHandle getPlanHandle(const Size & dft_size, int src_step, int dst_step, bool doubleFP,
                                      bool inplace, int flags, FftType fftType)
     {
-        cl_context currentContext = (cl_context)ocl::Context2::getDefault().ptr();
+        cl_context currentContext = (cl_context)ocl::Context::getDefault().ptr();
 
-        for (size_t i = 0, size = planStorage.size(); i < size; i ++)
+        for (size_t i = 0, size = planStorage.size(); i < size; ++i)
         {
             const FftPlan * const plan = planStorage[i];
+
             if (plan->dft_size == dft_size &&
                 plan->flags == flags &&
                 plan->src_step == src_step &&
@@ -1704,11 +1705,11 @@ static bool ocl_dft(InputArray _src, OutputArray _dst, int flags)
     cl_mem srcarg = (cl_mem)src.handle(ACCESS_READ);
     cl_mem dstarg = (cl_mem)dst.handle(ACCESS_RW);
 
-    cl_command_queue commandQueue = (cl_command_queue)ocl::Queue::getDefault().ptr();
+    cl_command_queue queue = (cl_command_queue)ocl::Queue::getDefault().ptr();
     cl_event e = 0;
 
     CLAMDDFT_Assert(clAmdFftEnqueueTransform(plHandle, dft_inverse ? CLFFT_BACKWARD : CLFFT_FORWARD,
-                                       1, &commandQueue, 0, NULL, &e,
+                                       1, &queue, 0, NULL, &e,
                                        &srcarg, &dstarg, (cl_mem)tmpBuffer.handle(ACCESS_RW)))
 
     tmpBuffer.addref();
@@ -1726,9 +1727,9 @@ static bool ocl_dft(InputArray _src, OutputArray _dst, int flags)
 void cv::dft( InputArray _src0, OutputArray _dst, int flags, int nonzero_rows )
 {
 #ifdef HAVE_CLAMDFFT
-    if (ocl::useOpenCL() && ocl::haveAmdFft() && ocl::Device::getDefault().type() != ocl::Device::TYPE_CPU &&
-            _dst.isUMat() && _src0.dims() <= 2 && nonzero_rows == 0 && ocl_dft(_src0, _dst, flags))
-        return;
+    CV_OCL_RUN(ocl::haveAmdFft() && ocl::Device::getDefault().type() != ocl::Device::TYPE_CPU &&
+            _dst.isUMat() && _src0.dims() <= 2 && nonzero_rows == 0,
+               ocl_dft(_src0, _dst, flags))
 #endif
 
     static DFTFunc dft_tbl[6] =
@@ -2135,6 +2136,8 @@ void cv::idft( InputArray src, OutputArray dst, int flags, int nonzero_rows )
     dft( src, dst, flags | DFT_INVERSE, nonzero_rows );
 }
 
+#ifdef HAVE_OPENCL
+
 namespace cv {
 
 static bool ocl_mulSpectrums( InputArray _srcA, InputArray _srcB,
@@ -2168,12 +2171,13 @@ static bool ocl_mulSpectrums( InputArray _srcA, InputArray _srcB,
 
 }
 
+#endif
+
 void cv::mulSpectrums( InputArray _srcA, InputArray _srcB,
                        OutputArray _dst, int flags, bool conjB )
 {
-    if (ocl::useOpenCL() && _dst.isUMat() &&
+    CV_OCL_RUN(_dst.isUMat() && _srcA.dims() <= 2 && _srcB.dims() <= 2,
             ocl_mulSpectrums(_srcA, _srcB, _dst, flags, conjB))
-        return;
 
     Mat srcA = _srcA.getMat(), srcB = _srcB.getMat();
     int depth = srcA.depth(), cn = srcA.channels(), type = srcA.type();

@@ -87,6 +87,11 @@
 #endif
 
 #ifndef CV_CL_GET_PROC_ADDRESS
+#ifdef __GNUC__
+#warning("OPENCV: OpenCL BLAS dynamic library loader: check configuration")
+#else
+#pragma message("WARNING: OPENCV: OpenCL BLAS dynamic library loader: check configuration")
+#endif
 #define CV_CL_GET_PROC_ADDRESS(name) NULL
 #endif
 
@@ -113,7 +118,9 @@ static void* openclamdblas_check_fn(int ID)
     void* func = CV_CL_GET_PROC_ADDRESS(e->fnName);
     if (!func)
     {
-        CV_Error(cv::Error::OpenCLApiCallError, cv::format("OpenCL AMD BLAS function is not available: [%s]", e->fnName));
+        throw cv::Exception(cv::Error::OpenCLApiCallError,
+                cv::format("OpenCL AMD BLAS function is not available: [%s]", e->fnName),
+                CV_Func, __FILE__, __LINE__);
     }
     *(e->ppFn) = func;
     return func;

@@ -45,6 +45,8 @@
 // ----------------------------------------------------------------------
 // CLAHE
 
+#ifdef HAVE_OPENCL
+
 namespace clahe
 {
     static bool calcLut(cv::InputArray _src, cv::OutputArray _dst,
@@ -81,11 +83,9 @@ namespace clahe
         idx = k.set(idx, tile_size);
         idx = k.set(idx, tilesX);
         idx = k.set(idx, clipLimit);
-        idx = k.set(idx, lutScale);
+        k.set(idx, lutScale);
 
-        if (!k.run(2, globalThreads, localThreads, false))
-            return false;
-        return true;
+        return k.run(2, globalThreads, localThreads, false);
     }
 
     static bool transform(cv::InputArray _src, cv::OutputArray _dst, cv::InputArray _lut,
@@ -116,21 +116,21 @@ namespace clahe
         idx = k.set(idx, src.rows);
         idx = k.set(idx, tile_size);
         idx = k.set(idx, tilesX);
-        idx = k.set(idx, tilesY);
+        k.set(idx, tilesY);
 
-        if (!k.run(2, globalThreads, localThreads, false))
-            return false;
-        return true;
+        return k.run(2, globalThreads, localThreads, false);
     }
 }
+
+#endif
 
 namespace
 {
     class CLAHE_CalcLut_Body : public cv::ParallelLoopBody
     {
     public:
-        CLAHE_CalcLut_Body(const cv::Mat& src, cv::Mat& lut, cv::Size tileSize, int tilesX, int tilesY, int clipLimit, float lutScale) :
-            src_(src), lut_(lut), tileSize_(tileSize), tilesX_(tilesX), tilesY_(tilesY), clipLimit_(clipLimit), lutScale_(lutScale)
+        CLAHE_CalcLut_Body(const cv::Mat& src, cv::Mat& lut, cv::Size tileSize, int tilesX, int clipLimit, float lutScale) :
+            src_(src), lut_(lut), tileSize_(tileSize), tilesX_(tilesX), clipLimit_(clipLimit), lutScale_(lutScale)
         {
         }
 
@@ -142,7 +142,6 @@ namespace
 
         cv::Size tileSize_;
         int tilesX_;
-        int tilesY_;
         int clipLimit_;
         float lutScale_;
     };
@@ -321,9 +320,12 @@ namespace
         int tilesY_;
 
         cv::Mat srcExt_;
-        cv::UMat usrcExt_;
         cv::Mat lut_;
+
+#ifdef HAVE_OPENCL
+        cv::UMat usrcExt_;
         cv::UMat ulut_;
+#endif
     };
 
     CLAHE_Impl::CLAHE_Impl(double clipLimit, int tilesX, int tilesY) :
@@ -340,7 +342,9 @@ namespace
     {
         CV_Assert( _src.type() == CV_8UC1 );
 
+#ifdef HAVE_OPENCL
         bool useOpenCL = cv::ocl::useOpenCL() && _src.isUMat() && _src.dims()<=2;
+#endif
 
         const int histSize = 256;
 
@@ -354,6 +358,7 @@ namespace
         }
         else
         {
+#ifdef HAVE_OPENCL
             if(useOpenCL)
             {
                 cv::copyMakeBorder(_src, usrcExt_, 0, tilesY_ - (_src.size().height % tilesY_), 0, tilesX_ - (_src.size().width % tilesX_), cv::BORDER_REFLECT_101);
@@ -361,6 +366,7 @@ namespace
                 _srcForLut = usrcExt_;
             }
             else
+#endif
             {
                 cv::copyMakeBorder(_src, srcExt_, 0, tilesY_ - (_src.size().height % tilesY_), 0, tilesX_ - (_src.size().width % tilesX_), cv::BORDER_REFLECT_101);
                 tileSize = cv::Size(srcExt_.size().width / tilesX_, srcExt_.size().height / tilesY_);
@@ -378,9 +384,11 @@ namespace
             clipLimit = std::max(clipLimit, 1);
         }
 
-        if(useOpenCL && clahe::calcLut(_srcForLut, ulut_, tilesX_, tilesY_, tileSize, clipLimit, lutScale) )
+#ifdef HAVE_OPENCL
+        if (useOpenCL && clahe::calcLut(_srcForLut, ulut_, tilesX_, tilesY_, tileSize, clipLimit, lutScale) )
             if( clahe::transform(_src, _dst, ulut_, tilesX_, tilesY_, tileSize) )
                 return;
+#endif
 
         cv::Mat src = _src.getMat();
         _dst.create( src.size(), src.type() );
@@ -388,7 +396,7 @@ namespace
         cv::Mat srcForLut = _srcForLut.getMat();
         lut_.create(tilesX_ * tilesY_, histSize, CV_8UC1);
 
-        CLAHE_CalcLut_Body calcLutBody(srcForLut, lut_, tileSize, tilesX_, tilesY_, clipLimit, lutScale);
+        CLAHE_CalcLut_Body calcLutBody(srcForLut, lut_, tileSize, tilesX_, clipLimit, lutScale);
         cv::parallel_for_(cv::Range(0, tilesX_ * tilesY_), calcLutBody);
 
         CLAHE_Interpolation_Body interpolationBody(src, dst, lut_, tileSize, tilesX_, tilesY_);
@@ -420,8 +428,10 @@ namespace
     {
         srcExt_.release();
         lut_.release();
+#ifdef HAVE_OPENCL
         usrcExt_.release();
         ulut_.release();
+#endif
     }
 }
 

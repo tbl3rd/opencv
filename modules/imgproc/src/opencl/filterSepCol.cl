@@ -47,6 +47,8 @@
 #define READ_TIMES_ROW ((2*(RADIUS+LSIZE0)-1)/LSIZE0)
 #endif
 
+#define noconvert
+
 /**********************************************************************************
 These kernels are written for separable filters such as Sobel, Scharr, GaussianBlur.
 Now(6/29/2011) the kernels only support 8U data type and the anchor of the convovle
@@ -60,6 +62,8 @@ Niko
 The info above maybe obsolete.
 ***********************************************************************************/
 
+#define DIG(a) a,
+__constant float mat_kernel[] = { COEFF };
 
 __kernel __attribute__((reqd_work_group_size(LSIZE0,LSIZE1,1))) void col_filter
                         (__global const GENTYPE_SRC * restrict src,
@@ -70,8 +74,7 @@ __kernel __attribute__((reqd_work_group_size(LSIZE0,LSIZE1,1))) void col_filter
                          const int dst_offset_in_pixel,
                          const int dst_step_in_pixel,
                          const int dst_cols,
-                         const int dst_rows,
-                         __constant float * mat_kernel)
+                         const int dst_rows)
 {
     int x = get_global_id(0);
     int y = get_global_id(1);

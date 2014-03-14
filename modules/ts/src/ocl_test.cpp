@@ -43,8 +43,6 @@
 
 #include "opencv2/ts/ocl_test.hpp"
 
-#ifdef HAVE_OPENCL
-
 namespace cvtest {
 namespace ocl {
 
@@ -96,30 +94,28 @@ static std::string bytesToStringRepr(size_t value)
 void dumpOpenCLDevice()
 {
     using namespace cv::ocl;
+
     try
     {
-#if 0
-        Platforms platforms;
-        getOpenCLPlatforms(platforms);
+        std::vector<PlatformInfo> platforms;
+        cv::ocl::getPlatfomsInfo(platforms);
         if (platforms.size() > 0)
         {
             DUMP_MESSAGE_STDOUT("OpenCL Platforms: ");
             for (size_t i = 0; i < platforms.size(); i++)
             {
-                const Platform* platform = platforms.at(i);
+                const PlatformInfo* platform = &platforms[i];
                 DUMP_MESSAGE_STDOUT("    " << platform->name().c_str());
-                const Devices& devices = platform->devices();
-                for (size_t j = 0; j < devices.size(); j++)
+                Device current_device;
+                for (int j = 0; j < platform->deviceNumber(); j++)
                 {
-                    const Device& current_device = *devices.at(j);
+                    platform->getDevice(current_device, j);
                     const char* deviceTypeStr = current_device.type() == Device::TYPE_CPU
-                                ? ("CPU") : (current_device.type() == Device::TYPE_GPU ? "GPU" : "unknown");
+                        ? ("CPU") : (current_device.type() == Device::TYPE_GPU ? current_device.hostUnifiedMemory() ? "iGPU" : "dGPU" : "unknown");
                     DUMP_MESSAGE_STDOUT( "        " << deviceTypeStr << ": " << current_device.name().c_str() << " (" << current_device.version().c_str() << ")");
-                    DUMP_PROPERTY_XML(cv::format("cv_ocl_platform_%d_device_%d", (int)i, (int)j),
-                            "(Platform=" << current_device.getPlatform().name().c_str()
-                            << ")(Type=" << deviceTypeStr
-                            << ")(Name=" << current_device.name().c_str()
-                            << ")(Version=" << current_device.version().c_str() << ")");
+                    DUMP_PROPERTY_XML( cv::format("cv_ocl_platform_%d_device_%d", (int)i, (int)j ),
+                        cv::format("(Platform=%s)(Type=%s)(Name=%s)(Version=%s)",
+                        platform->name().c_str(), deviceTypeStr, current_device.name().c_str(), current_device.version().c_str()) );
                 }
             }
         }
@@ -129,10 +125,9 @@ void dumpOpenCLDevice()
             DUMP_PROPERTY_XML("cv_ocl", "not available");
             return;
         }
-#endif
-        DUMP_MESSAGE_STDOUT("Current OpenCL device: ");
 
         const Device& device = Device::getDefault();
+        DUMP_MESSAGE_STDOUT("Current OpenCL device: ");
 
 #if 0
         DUMP_MESSAGE_STDOUT("    Platform = "<< device.getPlatform().name());
@@ -140,17 +135,15 @@ void dumpOpenCLDevice()
 #endif
 
         const char* deviceTypeStr = device.type() == Device::TYPE_CPU
-                        ? "CPU" : (device.type() == Device::TYPE_GPU ? "GPU" : "unknown");
+            ? ("CPU") : (device.type() == Device::TYPE_GPU ? device.hostUnifiedMemory() ? "iGPU" : "dGPU" : "unknown");
         DUMP_MESSAGE_STDOUT("    Type = "<< deviceTypeStr);
         DUMP_PROPERTY_XML("cv_ocl_current_deviceType", deviceTypeStr);
 
         DUMP_MESSAGE_STDOUT("    Name = "<< device.name());
         DUMP_PROPERTY_XML("cv_ocl_current_deviceName", device.name());
 
-#if 0
         DUMP_MESSAGE_STDOUT("    Version = " << device.version());
         DUMP_PROPERTY_XML("cv_ocl_current_deviceVersion", device.version());
-#endif
 
         DUMP_MESSAGE_STDOUT("    Compute units = "<< device.maxComputeUnits());
         DUMP_PROPERTY_XML("cv_ocl_current_maxComputeUnits", device.maxComputeUnits());
@@ -166,20 +159,40 @@ void dumpOpenCLDevice()
         DUMP_MESSAGE_STDOUT("    Max memory allocation size = "<< maxMemAllocSizeStr);
         DUMP_PROPERTY_XML("cv_ocl_current_maxMemAllocSize", device.maxMemAllocSize());
 
-#if 0
-        const char* doubleSupportStr = device.haveDoubleSupport() ? "Yes" : "No";
-        DUMP_MESSAGE_STDOUT("    Double support = "<< doubleSupportStr);
-        DUMP_PROPERTY_XML("cv_ocl_current_haveDoubleSupport", device.haveDoubleSupport());
-#else
         const char* doubleSupportStr = device.doubleFPConfig() > 0 ? "Yes" : "No";
         DUMP_MESSAGE_STDOUT("    Double support = "<< doubleSupportStr);
         DUMP_PROPERTY_XML("cv_ocl_current_haveDoubleSupport", device.doubleFPConfig() > 0);
 
-#endif
-
         const char* isUnifiedMemoryStr = device.hostUnifiedMemory() ? "Yes" : "No";
         DUMP_MESSAGE_STDOUT("    Host unified memory = "<< isUnifiedMemoryStr);
         DUMP_PROPERTY_XML("cv_ocl_current_hostUnifiedMemory", device.hostUnifiedMemory());
+
+        const char* haveAmdBlasStr = haveAmdBlas() ? "Yes" : "No";
+        DUMP_MESSAGE_STDOUT("    Has AMD Blas = "<< haveAmdBlasStr);
+        DUMP_PROPERTY_XML("cv_ocl_current_AmdBlas", haveAmdBlas());
+
+        const char* haveAmdFftStr = haveAmdFft() ? "Yes" : "No";
+        DUMP_MESSAGE_STDOUT("    Has AMD Fft = "<< haveAmdFftStr);
+        DUMP_PROPERTY_XML("cv_ocl_current_AmdFft", haveAmdFft());
+
+
+        DUMP_MESSAGE_STDOUT("    Preferred vector width char = "<< device.preferredVectorWidthChar());
+        DUMP_PROPERTY_XML("cv_ocl_current_preferredVectorWidthChar", device.preferredVectorWidthChar());
+
+        DUMP_MESSAGE_STDOUT("    Preferred vector width short = "<< device.preferredVectorWidthShort());
+        DUMP_PROPERTY_XML("cv_ocl_current_preferredVectorWidthShort", device.preferredVectorWidthShort());
+
+        DUMP_MESSAGE_STDOUT("    Preferred vector width int = "<< device.preferredVectorWidthInt());
+        DUMP_PROPERTY_XML("cv_ocl_current_preferredVectorWidthInt", device.preferredVectorWidthInt());
+
+        DUMP_MESSAGE_STDOUT("    Preferred vector width long = "<< device.preferredVectorWidthLong());
+        DUMP_PROPERTY_XML("cv_ocl_current_preferredVectorWidthLong", device.preferredVectorWidthLong());
+
+        DUMP_MESSAGE_STDOUT("    Preferred vector width float = "<< device.preferredVectorWidthFloat());
+        DUMP_PROPERTY_XML("cv_ocl_current_preferredVectorWidthFloat", device.preferredVectorWidthFloat());
+
+        DUMP_MESSAGE_STDOUT("    Preferred vector width double = "<< device.preferredVectorWidthDouble());
+        DUMP_PROPERTY_XML("cv_ocl_current_preferredVectorWidthDouble", device.preferredVectorWidthDouble());
     }
     catch (...)
     {
@@ -210,41 +223,39 @@ Mat TestUtils::readImageType(const String &fname, int type)
     return src;
 }
 
-double TestUtils::checkNorm(const Mat &m)
+double TestUtils::checkNorm(InputArray m)
 {
-    return norm(m, NORM_INF);
+    return norm(m.getMat(), NORM_INF);
 }
 
-double TestUtils::checkNorm(const Mat &m1, const Mat &m2)
+double TestUtils::checkNorm(InputArray m1, InputArray m2)
 {
-    return norm(m1, m2, NORM_INF);
+    return norm(m1.getMat(), m2.getMat(), NORM_INF);
 }
 
-double TestUtils::checkSimilarity(const Mat &m1, const Mat &m2)
+double TestUtils::checkSimilarity(InputArray m1, InputArray m2)
 {
     Mat diff;
-    matchTemplate(m1, m2, diff, CV_TM_CCORR_NORMED);
+    matchTemplate(m1.getMat(), m2.getMat(), diff, CV_TM_CCORR_NORMED);
     return std::abs(diff.at<float>(0, 0) - 1.f);
 }
 
-double TestUtils::checkRectSimilarity(Size sz, std::vector<Rect>& ob1, std::vector<Rect>& ob2)
+double TestUtils::checkRectSimilarity(const Size & sz, std::vector<Rect>& ob1, std::vector<Rect>& ob2)
 {
     double final_test_result = 0.0;
     size_t sz1 = ob1.size();
     size_t sz2 = ob2.size();
 
-    if(sz1 != sz2)
-    {
+    if (sz1 != sz2)
         return sz1 > sz2 ? (double)(sz1 - sz2) : (double)(sz2 - sz1);
-    }
     else
     {
-        if(sz1==0 && sz2==0)
+        if (sz1 == 0 && sz2 == 0)
             return 0;
         cv::Mat cpu_result(sz, CV_8UC1);
         cpu_result.setTo(0);
 
-        for(vector<Rect>::const_iterator r = ob1.begin(); r != ob1.end(); r++)
+        for (vector<Rect>::const_iterator r = ob1.begin(); r != ob1.end(); r++)
         {
             cv::Mat cpu_result_roi(cpu_result, *r);
             cpu_result_roi.setTo(1);
@@ -264,7 +275,7 @@ double TestUtils::checkRectSimilarity(Size sz, std::vector<Rect>& ob1, std::vect
         cv::Mat result_;
         multiply(cpu_result, gpu_result, result_);
         int result = cv::countNonZero(result_ > 0);
-        if(cpu_area!=0 && result!=0)
+        if (cpu_area!=0 && result!=0)
             final_test_result = 1.0 - (double)result/(double)cpu_area;
         else if(cpu_area==0 && result!=0)
             final_test_result = -1;
@@ -272,8 +283,10 @@ double TestUtils::checkRectSimilarity(Size sz, std::vector<Rect>& ob1, std::vect
     return final_test_result;
 }
 
-void TestUtils::showDiff(const Mat& src, const Mat& gold, const Mat& actual, double eps, bool alwaysShow)
+void TestUtils::showDiff(InputArray _src, InputArray _gold, InputArray _actual, double eps, bool alwaysShow)
 {
+    Mat src = _src.getMat(), actual = _actual.getMat(), gold = _gold.getMat();
+
     Mat diff, diff_thresh;
     absdiff(gold, actual, diff);
     diff.convertTo(diff, CV_32F);
@@ -301,6 +314,4 @@ void TestUtils::showDiff(const Mat& src, const Mat& gold, const Mat& actual, dou
     }
 }
 
-}} // namespace cvtest::ocl
-
-#endif // HAVE_OPENCL
+} } // namespace cvtest::ocl

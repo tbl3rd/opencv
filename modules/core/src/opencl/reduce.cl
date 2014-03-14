@@ -52,35 +52,71 @@
 
 #define noconvert
 
+#if cn != 3
+#define loadpix(addr) *(__global const srcT *)(addr)
+#define storepix(val, addr)  *(__global dstT *)(addr) = val
+#define srcTSIZE (int)sizeof(srcT)
+#define dstTSIZE (int)sizeof(dstT)
+#else
+#define loadpix(addr) vload3(0, (__global const srcT1 *)(addr))
+#define storepix(val, addr) vstore3(val, 0, (__global dstT1 *)(addr))
+#define srcTSIZE ((int)sizeof(srcT1)*3)
+#define dstTSIZE ((int)sizeof(dstT1)*3)
+#endif
+
 #ifdef HAVE_MASK
 #define EXTRA_PARAMS , __global const uchar * mask, int mask_step, int mask_offset
 #else
 #define EXTRA_PARAMS
 #endif
 
-#if defined OP_SUM || defined OP_SUM_ABS || defined OP_SUM_SQR
-#if OP_SUM
-#define FUNC(a, b) a += b
-#elif OP_SUM_ABS
-#define FUNC(a, b) a += b >= (dstT)(0) ? b : -b
-#elif OP_SUM_SQR
-#define FUNC(a, b) a += b * b
+// accumulative reduction stuff
+#if defined OP_SUM || defined OP_SUM_ABS || defined OP_SUM_SQR || defined OP_DOT
+#ifdef OP_DOT
+#if ddepth <= 4
+#define FUNC(a, b, c) a = mad24(b, c, a)
+#else
+#define FUNC(a, b, c) a = mad(b, c, a)
 #endif
+
+#elif defined OP_SUM
+#define FUNC(a, b) a += b
+
+#elif defined OP_SUM_ABS
+#define FUNC(a, b) a += b >= (dstT)(0) ? b : -b
+
+#elif defined OP_SUM_SQR
+#if ddepth <= 4
+#define FUNC(a, b) a = mad24(b, b, a)
+#else
+#define FUNC(a, b) a = mad(b, b, a)
+#endif
+#endif
+
 #define DECLARE_LOCAL_MEM \
     __local dstT localmem[WGS2_ALIGNED]
 #define DEFINE_ACCUMULATOR \
     dstT accumulator = (dstT)(0)
+
 #ifdef HAVE_MASK
 #define REDUCE_GLOBAL \
-    dstT temp = convertToDT(src[0]); \
     int mask_index = mad24(id / cols, mask_step, mask_offset + (id % cols)); \
     if (mask[mask_index]) \
-        FUNC(accumulator, temp)
+    { \
+        dstT temp = convertToDT(loadpix(srcptr + src_index)); \
+        FUNC(accumulator, temp); \
+    }
+#elif defined OP_DOT
+#define REDUCE_GLOBAL \
+    int src2_index = mad24(id / cols, src2_step, mad24(id % cols, srcTSIZE, src2_offset)); \
+    dstT temp = convertToDT(loadpix(srcptr + src_index)), temp2 = convertToDT(loadpix(src2ptr + src2_index)); \
+    FUNC(accumulator, temp, temp2)
 #else
 #define REDUCE_GLOBAL \
-    dstT temp = convertToDT(src[0]); \
+    dstT temp = convertToDT(loadpix(srcptr + src_index)); \
     FUNC(accumulator, temp)
 #endif
+
 #define SET_LOCAL_1 \
     localmem[lid] = accumulator
 #define REDUCE_LOCAL_1 \
@@ -88,9 +124,9 @@
 #define REDUCE_LOCAL_2 \
     localmem[lid] += localmem[lid2]
 #define CALC_RESULT \
-    __global dstT * dst = (__global dstT *)(dstptr + (int)sizeof(dstT) * gid); \
-    dst[0] = localmem[0]
+    storepix(localmem[0], dstptr + dstTSIZE * gid)
 
+// countNonZero stuff
 #elif defined OP_COUNT_NON_ZERO
 #define dstT int
 #define DECLARE_LOCAL_MEM \
@@ -99,7 +135,7 @@
     dstT accumulator = (dstT)(0); \
     srcT zero = (srcT)(0), one = (srcT)(1)
 #define REDUCE_GLOBAL \
-    accumulator += src[0] == zero ? zero : one
+    accumulator += loadpix(srcptr + src_index) == zero ? zero : one
 #define SET_LOCAL_1 \
     localmem[lid] = accumulator
 #define REDUCE_LOCAL_1 \
@@ -107,46 +143,42 @@
 #define REDUCE_LOCAL_2 \
     localmem[lid] += localmem[lid2]
 #define CALC_RESULT \
-    __global dstT * dst = (__global dstT *)(dstptr + (int)sizeof(dstT) * gid); \
-    dst[0] = localmem[0]
+    storepix(localmem[0], dstptr + dstTSIZE * gid)
 
+// minMaxLoc stuff
 #elif defined OP_MIN_MAX_LOC || defined OP_MIN_MAX_LOC_MASK
 
-#if defined (DEPTH_0)
+#ifdef DEPTH_0
 #define srcT uchar
 #define MIN_VAL 0
 #define MAX_VAL 255
-#endif
-#if defined (DEPTH_1)
+#elif defined DEPTH_1
 #define srcT char
 #define MIN_VAL -128
 #define MAX_VAL 127
-#endif
-#if defined (DEPTH_2)
+#elif defined DEPTH_2
 #define srcT ushort
 #define MIN_VAL 0
 #define MAX_VAL 65535
-#endif
-#if defined (DEPTH_3)
+#elif defined DEPTH_3
 #define srcT short
 #define MIN_VAL -32768
 #define MAX_VAL 32767
-#endif
-#if defined (DEPTH_4)
+#elif defined DEPTH_4
 #define srcT int
 #define MIN_VAL INT_MIN
 #define MAX_VAL INT_MAX
-#endif
-#if defined (DEPTH_5)
+#elif defined DEPTH_5
 #define srcT float
 #define MIN_VAL (-FLT_MAX)
 #define MAX_VAL FLT_MAX
-#endif
-#if defined (DEPTH_6)
+#elif defined DEPTH_6
 #define srcT double
 #define MIN_VAL (-DBL_MAX)
 #define MAX_VAL DBL_MAX
 #endif
+
+#define dstT srcT
 
 #define DECLARE_LOCAL_MEM \
     __local srcT localmem_min[WGS2_ALIGNED]; \
@@ -162,7 +194,7 @@
     srcT temp; \
     int temploc
 #define REDUCE_GLOBAL \
-    temp = src[0]; \
+    temp = loadpix(srcptr + src_index); \
     temploc = id; \
     srcT temp_minval = minval, temp_maxval = maxval; \
     minval = min(minval, temp); \
@@ -177,8 +209,8 @@
 #define REDUCE_LOCAL_1 \
     srcT oldmin = localmem_min[lid-WGS2_ALIGNED]; \
     srcT oldmax = localmem_max[lid-WGS2_ALIGNED]; \
-    localmem_min[lid - WGS2_ALIGNED] = min(minval,localmem_min[lid-WGS2_ALIGNED]); \
-    localmem_max[lid - WGS2_ALIGNED] = max(maxval,localmem_max[lid-WGS2_ALIGNED]); \
+    localmem_min[lid - WGS2_ALIGNED] = min(minval, localmem_min[lid-WGS2_ALIGNED]); \
+    localmem_max[lid - WGS2_ALIGNED] = max(maxval, localmem_max[lid-WGS2_ALIGNED]); \
     srcT minv = localmem_min[lid - WGS2_ALIGNED], maxv = localmem_max[lid - WGS2_ALIGNED]; \
     localmem_minloc[lid - WGS2_ALIGNED] = (minv == minval) ? (minv == oldmin) ? \
         min(minloc, localmem_minloc[lid-WGS2_ALIGNED]) : minloc : localmem_minloc[lid-WGS2_ALIGNED]; \
@@ -198,10 +230,8 @@
         localmem_maxloc[lid] : (max1 == max2) ? (max1 == oldmax) ? min(localmem_maxloc[lid2],localmem_maxloc[lid]) : \
         localmem_maxloc[lid2] : localmem_maxloc[lid]
 #define CALC_RESULT \
-    __global srcT * dstminval = (__global srcT *)(dstptr + (int)sizeof(srcT) * gid); \
-    __global srcT * dstmaxval = (__global srcT *)(dstptr2 + (int)sizeof(srcT) * gid); \
-    dstminval[0] = localmem_min[0]; \
-    dstmaxval[0] = localmem_max[0]; \
+    storepix(localmem_min[0], dstptr + dstTSIZE * gid); \
+    storepix(localmem_max[0], dstptr2 + dstTSIZE * gid); \
     dstlocptr[gid] = localmem_minloc[0]; \
     dstlocptr2[gid] = localmem_maxloc[0]
 
@@ -217,7 +247,7 @@
     int temploc
 #undef REDUCE_GLOBAL
 #define REDUCE_GLOBAL \
-    temp = src[0]; \
+    temp = loadpix(srcptr + src_index); \
     temploc = id; \
     int mask_index = mad24(id / cols, mask_step, mask_offset + (id % cols) * (int)sizeof(uchar)); \
     __global const uchar * mask = (__global const uchar *)(maskptr + mask_index); \
@@ -231,19 +261,23 @@
 
 #else
 #error "No operation"
-#endif
+#endif // end of minMaxLoc stuff
 
-#if defined OP_MIN_MAX_LOC
+#ifdef OP_MIN_MAX_LOC
 #undef EXTRA_PARAMS
 #define EXTRA_PARAMS , __global uchar * dstptr2, __global int * dstlocptr, __global int * dstlocptr2
-#endif
-#if defined OP_MIN_MAX_LOC_MASK
+
+#elif defined OP_MIN_MAX_LOC_MASK
 #undef EXTRA_PARAMS
 #define EXTRA_PARAMS , __global uchar * dstptr2, __global int * dstlocptr, __global int * dstlocptr2, \
-    __global const uchar * maskptr, int mask_step, int mask_offset, __global int * test
+    __global const uchar * maskptr, int mask_step, int mask_offset
+
+#elif defined OP_DOT
+#undef EXTRA_PARAMS
+#define EXTRA_PARAMS , __global uchar * src2ptr, int src2_step, int src2_offset
 #endif
 
-__kernel void reduce(__global const uchar * srcptr, int step, int offset, int cols,
+__kernel void reduce(__global const uchar * srcptr, int src_step, int src_offset, int cols,
                      int total, int groupnum, __global uchar * dstptr EXTRA_PARAMS)
 {
     int lid = get_local_id(0);
@@ -255,8 +289,7 @@ __kernel void reduce(__global const uchar * srcptr, int step, int offset, int co
 
     for (int grain = groupnum * WGS; id < total; id += grain)
     {
-        int src_index = mad24(id / cols, step, offset + (id % cols) * (int)sizeof(srcT));
-        __global const srcT * src = (__global const srcT *)(srcptr + src_index);
+        int src_index = mad24(id / cols, src_step, mad24(id % cols, srcTSIZE, src_offset));
         REDUCE_GLOBAL;
     }
 

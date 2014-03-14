@@ -13,7 +13,6 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_LIST_DIR)
 add_subdirectory(c)
 add_subdirectory(cpp)
 add_subdirectory(gpu)
-add_subdirectory(ocl)
 add_subdirectory(tapi)
 
 if(WIN32 AND HAVE_DIRECTX)
@@ -63,7 +62,6 @@ endif()
 
 add_subdirectory(c)
 add_subdirectory(cpp)
-add_subdirectory(ocl)
 # FIXIT: can't use cvconfig.h in samples: add_subdirectory(gpu)
 
 if(WIN32)
