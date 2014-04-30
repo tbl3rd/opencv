@@ -44,10 +44,6 @@
 #include "opencl_kernels.hpp"
 #include "opencv2/core/opencl/runtime/opencl_clamdblas.hpp"
 
-#ifdef HAVE_IPP
-#include "ippversion.h"
-#endif
-
 namespace cv
 {
 
@@ -2216,7 +2212,7 @@ void cv::scaleAdd( InputArray _src1, double alpha, InputArray _src2, OutputArray
     Mat src1 = _src1.getMat(), src2 = _src2.getMat();
     CV_Assert(src1.size == src2.size);
 
-    _dst.create(src1.dims, src1.size, src1.type());
+    _dst.create(src1.dims, src1.size, type);
     Mat dst = _dst.getMat();
 
     float falpha = (float)alpha;
@@ -2224,7 +2220,7 @@ void cv::scaleAdd( InputArray _src1, double alpha, InputArray _src2, OutputArray
 
     ScaleAddFunc func = depth == CV_32F ? (ScaleAddFunc)scaleAdd_32f : (ScaleAddFunc)scaleAdd_64f;
 
-    if( src1.isContinuous() && src2.isContinuous() && dst.isContinuous() )
+    if (src1.isContinuous() && src2.isContinuous() && dst.isContinuous())
     {
         size_t len = src1.total()*cn;
         func(src1.data, src2.data, dst.data, (int)len, palpha);
@@ -2803,11 +2799,12 @@ static double dotProd_8u(const uchar* src1, const uchar* src2, int len)
 {
     double r = 0;
 #if ARITHM_USE_IPP
-    ippiDotProd_8u64f_C1R(src1, (int)(len*sizeof(src1[0])),
-                          src2, (int)(len*sizeof(src2[0])),
-                          ippiSize(len, 1), &r);
-    return r;
-#else
+    if (0 <= ippiDotProd_8u64f_C1R(src1, (int)(len*sizeof(src1[0])),
+                                   src2, (int)(len*sizeof(src2[0])),
+                                   ippiSize(len, 1), &r))
+        return r;
+    setIppErrorStatus();
+#endif
     int i = 0;
 
 #if CV_SSE2
@@ -2853,7 +2850,6 @@ static double dotProd_8u(const uchar* src1, const uchar* src2, int len)
     }
 #endif
     return r + dotProd_(src1, src2, len - i);
-#endif
 }
 
 
@@ -2864,48 +2860,57 @@ static double dotProd_8s(const schar* src1, const schar* src2, int len)
 
 static double dotProd_16u(const ushort* src1, const ushort* src2, int len)
 {
+#if (ARITHM_USE_IPP == 1)
     double r = 0;
-    IF_IPP(ippiDotProd_16u64f_C1R(src1, (int)(len*sizeof(src1[0])),
-                                  src2, (int)(len*sizeof(src2[0])),
-                                  ippiSize(len, 1), &r),
-           r = dotProd_(src1, src2, len));
-    return r;
+    if (0 <= ippiDotProd_16u64f_C1R(src1, (int)(len*sizeof(src1[0])), src2, (int)(len*sizeof(src2[0])), ippiSize(len, 1), &r))
+        return r;
+    setIppErrorStatus();
+#endif
+    return dotProd_(src1, src2, len);
 }
 
 static double dotProd_16s(const short* src1, const short* src2, int len)
 {
+#if (ARITHM_USE_IPP == 1)
     double r = 0;
-    IF_IPP(ippiDotProd_16s64f_C1R(src1, (int)(len*sizeof(src1[0])),
-                                  src2, (int)(len*sizeof(src2[0])),
-                                  ippiSize(len, 1), &r),
-           r = dotProd_(src1, src2, len));
-    return r;
+    if (0 <= ippiDotProd_16s64f_C1R(src1, (int)(len*sizeof(src1[0])), src2, (int)(len*sizeof(src2[0])), ippiSize(len, 1), &r))
+        return r;
+    setIppErrorStatus();
+#endif
+    return dotProd_(src1, src2, len);
 }
 
 static double dotProd_32s(const int* src1, const int* src2, int len)
 {
+#if (ARITHM_USE_IPP == 1)
     double r = 0;
-    IF_IPP(ippiDotProd_32s64f_C1R(src1, (int)(len*sizeof(src1[0])),
-                                  src2, (int)(len*sizeof(src2[0])),
-                                  ippiSize(len, 1), &r),
-           r = dotProd_(src1, src2, len));
-    return r;
+    if (0 <= ippiDotProd_32s64f_C1R(src1, (int)(len*sizeof(src1[0])), src2, (int)(len*sizeof(src2[0])), ippiSize(len, 1), &r))
+        return r;
+    setIppErrorStatus();
+#endif
+    return dotProd_(src1, src2, len);
 }
 
 static double dotProd_32f(const float* src1, const float* src2, int len)
 {
+#if (ARITHM_USE_IPP == 1)
     double r = 0;
-    IF_IPP(ippsDotProd_32f64f(src1, src2, len, &r),
-           r = dotProd_(src1, src2, len));
-    return r;
+    if (0 <= ippsDotProd_32f64f(src1, src2, len, &r))
+        return r;
+    setIppErrorStatus();
+#endif
+    return dotProd_(src1, src2, len);
 }
 
 static double dotProd_64f(const double* src1, const double* src2, int len)
 {
+#if (ARITHM_USE_IPP == 1)
     double r = 0;
-    IF_IPP(ippsDotProd_64f(src1, src2, len, &r),
-           r = dotProd_(src1, src2, len));
-    return r;
+    if (0 <= ippsDotProd_64f(src1, src2, len, &r))
+        return r;
+    setIppErrorStatus();
+#endif
+    return dotProd_(src1, src2, len);
 }
 
 

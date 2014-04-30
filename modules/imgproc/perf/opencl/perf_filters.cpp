@@ -112,7 +112,7 @@ OCL_PERF_TEST_P(LaplacianFixture, Laplacian,
     const FilterParams params = GetParam();
     const Size srcSize = get<0>(params);
     const int type = get<1>(params), ksize = get<2>(params);
-    const double eps = CV_MAT_DEPTH(type) <= CV_32S ? 1 : 1e-5;
+    const double eps = CV_MAT_DEPTH(type) <= CV_32S ? 1 : 2e-5;
 
     checkDeviceMaxMemoryAllocSize(srcSize, type);
 
@@ -211,7 +211,7 @@ OCL_PERF_TEST_P(SobelFixture, Sobel,
 
     OCL_TEST_CYCLE() cv::Sobel(src, dst, -1, dx, dy);
 
-    SANITY_CHECK(dst);
+    SANITY_CHECK(dst, 1e-6);
 }
 
 ///////////// Scharr ////////////////////////

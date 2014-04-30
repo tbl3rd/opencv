@@ -890,6 +890,26 @@ namespace cv
             std::vector<UMat> prevPyr; prevPyr.resize(maxLevel + 1);
             std::vector<UMat> nextPyr; nextPyr.resize(maxLevel + 1);
 
+            // allocate buffers with aligned pitch to be able to use cl_khr_image2d_from_buffer extention
+            // This is the required pitch alignment in pixels
+            int pitchAlign = (int)ocl::Device::getDefault().imagePitchAlignment();
+            if (pitchAlign>0)
+            {
+                prevPyr[0] = UMat(prevImg.rows,(prevImg.cols+pitchAlign-1)&(-pitchAlign),prevImg.type()).colRange(0,prevImg.cols);
+                nextPyr[0] = UMat(nextImg.rows,(nextImg.cols+pitchAlign-1)&(-pitchAlign),nextImg.type()).colRange(0,nextImg.cols);
+                for (int level = 1; level <= maxLevel; ++level)
+                {
+                    int cols,rows;
+                    // allocate buffers with aligned pitch to be able to use image on buffer extention
+                    cols = (prevPyr[level - 1].cols+1)/2;
+                    rows = (prevPyr[level - 1].rows+1)/2;
+                    prevPyr[level] = UMat(rows,(cols+pitchAlign-1)&(-pitchAlign),prevPyr[level-1].type()).colRange(0,cols);
+                    cols = (nextPyr[level - 1].cols+1)/2;
+                    rows = (nextPyr[level - 1].rows+1)/2;
+                    nextPyr[level] = UMat(rows,(cols+pitchAlign-1)&(-pitchAlign),nextPyr[level-1].type()).colRange(0,cols);
+                }
+            }
+
             prevImg.convertTo(prevPyr[0], CV_32F);
             nextImg.convertTo(nextPyr[0], CV_32F);
 
@@ -969,15 +989,15 @@ namespace cv
             if (!kernel.create("lkSparse", cv::ocl::video::pyrlk_oclsrc, build_options))
                 return false;
 
-            ocl::Image2D imageI(I);
-            ocl::Image2D imageJ(J);
+            CV_Assert(I.depth() == CV_32F && J.depth() == CV_32F);
+            ocl::Image2D imageI(I, false, ocl::Image2D::canCreateAlias(I));
+            ocl::Image2D imageJ(J, false, ocl::Image2D::canCreateAlias(J));
+
             int idxArg = 0;
             idxArg = kernel.set(idxArg, imageI); //image2d_t I
             idxArg = kernel.set(idxArg, imageJ); //image2d_t J
             idxArg = kernel.set(idxArg, ocl::KernelArg::PtrReadOnly(prevPts)); // __global const float2* prevPts
-            idxArg = kernel.set(idxArg, (int)prevPts.step); // int prevPtsStep
             idxArg = kernel.set(idxArg, ocl::KernelArg::PtrReadWrite(nextPts)); // __global const float2* nextPts
-            idxArg = kernel.set(idxArg, (int)nextPts.step); //  int nextPtsStep
             idxArg = kernel.set(idxArg, ocl::KernelArg::PtrReadWrite(status)); // __global uchar* status
             idxArg = kernel.set(idxArg, ocl::KernelArg::PtrReadWrite(err)); // __global float* err
             idxArg = kernel.set(idxArg, (int)level); // const int level
@@ -989,7 +1009,7 @@ namespace cv
             idxArg = kernel.set(idxArg, (int)winSize.height); // int c_winSize_y
             idxArg = kernel.set(idxArg, (int)iters); // int c_iters
             idxArg = kernel.set(idxArg, (char)calcErr); //char calcErr
-            return kernel.run(2, globalThreads, localThreads, true);
+            return kernel.run(2, globalThreads, localThreads, false);
         }
     private:
         inline static bool isDeviceCPU()
@@ -1072,7 +1092,9 @@ void cv::calcOpticalFlowPyrLK( InputArray _prevImg, InputArray _nextImg,
                            TermCriteria criteria,
                            int flags, double minEigThreshold )
 {
-    bool use_opencl = ocl::useOpenCL() && (_prevImg.isUMat() || _nextImg.isUMat());
+    bool use_opencl = ocl::useOpenCL() &&
+                      (_prevImg.isUMat() || _nextImg.isUMat()) &&
+                      ocl::Image2D::isFormatSupported(CV_32F, 1, false);
     if ( use_opencl && ocl_calcOpticalFlowPyrLK(_prevImg, _nextImg, _prevPts, _nextPts, _status, _err, winSize, maxLevel, criteria, flags/*, minEigThreshold*/))
         return;
 

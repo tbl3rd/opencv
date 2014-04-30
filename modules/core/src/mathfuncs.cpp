@@ -46,7 +46,6 @@
 namespace cv
 {
 
-static const int MAX_BLOCK_SIZE = 1024;
 typedef void (*MathFunc)(const void* src, void* dst, int len);
 
 static const float atan2_p1 = 0.9997878412794807f*(float)(180/CV_PI);
@@ -238,6 +237,13 @@ float  cubeRoot( float value )
 
 static void Magnitude_32f(const float* x, const float* y, float* mag, int len)
 {
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+    IppStatus status = ippsMagnitude_32f(x, y, mag, len);
+    if (status >= 0)
+        return;
+    setIppErrorStatus();
+#endif
+
     int i = 0;
 
 #if CV_SSE
@@ -264,6 +270,13 @@ static void Magnitude_32f(const float* x, const float* y, float* mag, int len)
 
 static void Magnitude_64f(const double* x, const double* y, double* mag, int len)
 {
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+    IppStatus status = ippsMagnitude_64f(x, y, mag, len);
+    if (status >= 0)
+        return;
+    setIppErrorStatus();
+#endif
+
     int i = 0;
 
 #if CV_SSE2
@@ -291,6 +304,12 @@ static void Magnitude_64f(const double* x, const double* y, double* mag, int len
 
 static void InvSqrt_32f(const float* src, float* dst, int len)
 {
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+    if (ippsInvSqrt_32f_A21(src, dst, len) >= 0)
+        return;
+    setIppErrorStatus();
+#endif
+
     int i = 0;
 
 #if CV_SSE
@@ -334,6 +353,11 @@ static void InvSqrt_64f(const double* src, double* dst, int len)
 
 static void Sqrt_32f(const float* src, float* dst, int len)
 {
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+    if (ippsSqrt_32f_A21(src, dst, len) >= 0)
+        return;
+    setIppErrorStatus();
+#endif
     int i = 0;
 
 #if CV_SSE
@@ -363,6 +387,12 @@ static void Sqrt_32f(const float* src, float* dst, int len)
 
 static void Sqrt_64f(const double* src, double* dst, int len)
 {
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+    if (ippsSqrt_64f_A50(src, dst, len) >= 0)
+        return;
+    setIppErrorStatus();
+#endif
+
     int i = 0;
 
 #if CV_SSE2
@@ -729,6 +759,23 @@ void polarToCart( InputArray src1, InputArray src2,
     dst2.create( Angle.dims, Angle.size, type );
     Mat X = dst1.getMat(), Y = dst2.getMat();
 
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+    if (Mag.isContinuous() && Angle.isContinuous() && X.isContinuous() && Y.isContinuous() && !angleInDegrees)
+    {
+        typedef IppStatus (CV_STDCALL * ippsPolarToCart)(const void * pSrcMagn, const void * pSrcPhase,
+                                                         void * pDstRe, void * pDstIm, int len);
+        ippsPolarToCart ippFunc =
+        depth == CV_32F ? (ippsPolarToCart)ippsPolarToCart_32f :
+        depth == CV_64F ? (ippsPolarToCart)ippsPolarToCart_64f : 0;
+        CV_Assert(ippFunc != 0);
+
+        IppStatus status = ippFunc(Mag.data, Angle.data, X.data, Y.data, static_cast<int>(cn * X.total()));
+        if (status >= 0)
+            return;
+        setIppErrorStatus();
+    }
+#endif
+
     const Mat* arrays[] = {&Mag, &Angle, &X, &Y, 0};
     uchar* ptrs[4];
     NAryMatIterator it(arrays, ptrs);
@@ -811,8 +858,6 @@ typedef union
     double d;
 }
 DBLINT;
-
-#ifndef HAVE_IPP
 
 #define EXPTAB_SCALE 6
 #define EXPTAB_MASK  ((1 << EXPTAB_SCALE) - 1)
@@ -1275,12 +1320,27 @@ static void Exp_64f( const double *_x, double *y, int n )
 #undef EXPTAB_MASK
 #undef EXPPOLY_32F_A0
 
-#else
+#ifdef HAVE_IPP
+static void Exp_32f_ipp(const float *x, float *y, int n)
+{
+    if (0 <= ippsExp_32f_A21(x, y, n))
+        return;
+    setIppErrorStatus();
+    Exp_32f(x, y, n);
+}
 
-#define Exp_32f ippsExp_32f_A21
-#define Exp_64f ippsExp_64f_A50
+static void Exp_64f_ipp(const double *x, double *y, int n)
+{
+    if (0 <= ippsExp_64f_A50(x, y, n))
+        return;
+    setIppErrorStatus();
+    Exp_64f(x, y, n);
+}
 
+#define Exp_32f Exp_32f_ipp
+#define Exp_64f Exp_64f_ipp
 #endif
+
 
 void exp( InputArray _src, OutputArray _dst )
 {
@@ -1302,9 +1362,9 @@ void exp( InputArray _src, OutputArray _dst )
     for( size_t i = 0; i < it.nplanes; i++, ++it )
     {
         if( depth == CV_32F )
-            Exp_32f( (const float*)ptrs[0], (float*)ptrs[1], len );
+            Exp_32f((const float*)ptrs[0], (float*)ptrs[1], len);
         else
-            Exp_64f( (const double*)ptrs[0], (double*)ptrs[1], len );
+            Exp_64f((const double*)ptrs[0], (double*)ptrs[1], len);
     }
 }
 
@@ -1312,8 +1372,6 @@ void exp( InputArray _src, OutputArray _dst )
 /****************************************************************************************\
 *                                          L O G                                         *
 \****************************************************************************************/
-
-#ifndef HAVE_IPP
 
 #define LOGTAB_SCALE    8
 #define LOGTAB_MASK         ((1 << LOGTAB_SCALE) - 1)
@@ -1922,11 +1980,25 @@ static void Log_64f( const double *x, double *y, int n )
     }
 }
 
-#else
+#ifdef HAVE_IPP
+static void Log_32f_ipp(const float *x, float *y, int n)
+{
+    if (0 <= ippsLn_32f_A21(x, y, n))
+        return;
+    setIppErrorStatus();
+    Log_32f(x, y, n);
+}
 
-#define Log_32f ippsLn_32f_A21
-#define Log_64f ippsLn_64f_A50
+static void Log_64f_ipp(const double *x, double *y, int n)
+{
+    if (0 <= ippsLn_64f_A50(x, y, n))
+        return;
+    setIppErrorStatus();
+    Log_64f(x, y, n);
+}
 
+#define Log_32f Log_32f_ipp
+#define Log_64f Log_64f_ipp
 #endif
 
 void log( InputArray _src, OutputArray _dst )
@@ -2041,7 +2113,7 @@ static bool ocl_pow(InputArray _src, double power, OutputArray _dst,
     const char * const op = issqrt ? "OP_SQRT" : is_ipower ? "OP_POWN" : "OP_POW";
 
     ocl::Kernel k("KF", ocl::core::arithm_oclsrc,
-                  format("-D dstT=%s -D %s -D UNARY_OP%s", ocl::typeToStr(CV_MAKE_TYPE(depth, 1)),
+                  format("-D dstT=%s -D %s -D UNARY_OP%s", ocl::typeToStr(depth),
                          op, doubleSupport ? " -D DOUBLE_SUPPORT" : ""));
     if (k.empty())
         return false;
@@ -2081,7 +2153,7 @@ void pow( InputArray _src, double power, OutputArray _dst )
     {
         if( ipower < 0 )
         {
-            divide( 1., _src, _dst );
+            divide( Scalar::all(1), _src, _dst );
             if( ipower == -1 )
                 return;
             ipower = -ipower;
@@ -2098,6 +2170,30 @@ void pow( InputArray _src, double power, OutputArray _dst )
             _src.copyTo(_dst);
             return;
         case 2:
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+            if (depth == CV_32F && !same && ( (_src.dims() <= 2 && !ocl::useOpenCL()) || (_src.dims() > 2 && _src.isContinuous() && _dst.isContinuous()) ))
+            {
+                Mat src = _src.getMat();
+                _dst.create( src.dims, src.size, type );
+                Mat dst = _dst.getMat();
+
+                Size size = src.size();
+                int srcstep = (int)src.step, dststep = (int)dst.step, esz = CV_ELEM_SIZE(type);
+                if (src.isContinuous() && dst.isContinuous())
+                {
+                    size.width = (int)src.total();
+                    size.height = 1;
+                    srcstep = dststep = (int)src.total() * esz;
+                }
+                size.width *= cn;
+
+                IppStatus status = ippiSqr_32f_C1R((const Ipp32f *)src.data, srcstep, (Ipp32f *)dst.data, dststep, ippiSize(size.width, size.height));
+
+                if (status >= 0)
+                    return;
+                setIppErrorStatus();
+            }
+#endif
             if (same)
                 multiply(_dst, _dst, _dst);
             else
@@ -2115,10 +2211,7 @@ void pow( InputArray _src, double power, OutputArray _dst )
 
     Mat src, dst;
     if (same)
-    {
-        dst = _dst.getMat();
-        src = dst;
-    }
+        src = dst = _dst.getMat();
     else
     {
         src = _src.getMat();
@@ -2150,6 +2243,19 @@ void pow( InputArray _src, double power, OutputArray _dst )
     }
     else
     {
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+        if (src.isContinuous() && dst.isContinuous())
+        {
+            IppStatus status = depth == CV_32F ?
+                        ippsPowx_32f_A21((const Ipp32f *)src.data, (Ipp32f)power, (Ipp32f*)dst.data, (Ipp32s)(src.total() * cn)) :
+                        ippsPowx_64f_A50((const Ipp64f *)src.data, power, (Ipp64f*)dst.data, (Ipp32s)(src.total() * cn));
+
+            if (status >= 0)
+                return;
+            setIppErrorStatus();
+        }
+#endif
+
         int j, k, blockSize = std::min(len, ((BLOCK_SIZE + cn-1)/cn)*cn);
         size_t esz1 = src.elemSize1();
 

@@ -210,13 +210,41 @@ CV_EXPORTS void scalarToRawData(const cv::Scalar& s, void* buf, int type, int un
 \****************************************************************************************/
 
 #ifdef HAVE_IPP
-#  include "ipp.h"
+#  ifdef HAVE_IPP_ICV_ONLY
+#    include "ipp_redefine.h"
+#    include "ippicv.h"
+#  else
+#    include "ipp.h"
+#  endif
+#  define IPP_VERSION_X100 (IPP_VERSION_MAJOR * 100 + IPP_VERSION_MINOR)
+
+#define IPP_ALIGN 32 // required for AVX optimization
+
+#define setIppErrorStatus() cv::ipp::setIppStatus(-1, CV_Func, __FILE__, __LINE__)
 
 static inline IppiSize ippiSize(int width, int height)
 {
     IppiSize size = { width, height };
     return size;
 }
+
+static inline IppiSize ippiSize(const cv::Size & _size)
+{
+    IppiSize size = { _size.width, _size.height };
+    return size;
+}
+
+static inline IppiBorderType ippiGetBorderType(int borderTypeNI)
+{
+    return borderTypeNI == cv::BORDER_CONSTANT ? ippBorderConst :
+        borderTypeNI == cv::BORDER_WRAP ? ippBorderWrap :
+        borderTypeNI == cv::BORDER_REPLICATE ? ippBorderRepl :
+        borderTypeNI == cv::BORDER_REFLECT_101 ? ippBorderMirror :
+        borderTypeNI == cv::BORDER_REFLECT ? ippBorderMirrorR : (IppiBorderType)-1;
+}
+
+#else
+#  define IPP_VERSION_X100 0
 #endif
 
 #ifndef IPPI_CALL

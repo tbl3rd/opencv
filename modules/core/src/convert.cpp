@@ -415,42 +415,54 @@ namespace cv {
 
 static bool ocl_merge( InputArrayOfArrays _mv, OutputArray _dst )
 {
-    std::vector<UMat> src;
+    std::vector<UMat> src, ksrc;
     _mv.getUMatVector(src);
     CV_Assert(!src.empty());
 
     int type = src[0].type(), depth = CV_MAT_DEPTH(type);
     Size size = src[0].size();
 
-    size_t srcsize = src.size();
-    for (size_t i = 0; i < srcsize; ++i)
+    for (size_t i = 0, srcsize = src.size(); i < srcsize; ++i)
     {
-        int itype = src[i].type(), icn = CV_MAT_CN(itype), idepth = CV_MAT_DEPTH(itype);
-        if (src[i].dims > 2 || icn != 1)
+        int itype = src[i].type(), icn = CV_MAT_CN(itype), idepth = CV_MAT_DEPTH(itype),
+                esz1 = CV_ELEM_SIZE1(idepth);
+        if (src[i].dims > 2)
             return false;
-        CV_Assert(size == src[i].size() && depth == idepth);
-    }
 
-    String srcargs, srcdecl, processelem;
-    for (size_t i = 0; i < srcsize; ++i)
+        CV_Assert(size == src[i].size() && depth == idepth);
+
+        for (int cn = 0; cn < icn; ++cn)
+        {
+            UMat tsrc = src[i];
+            tsrc.offset += cn * esz1;
+            ksrc.push_back(tsrc);
+        }
+    }
+    int dcn = (int)ksrc.size();
+
+    String srcargs, srcdecl, processelem, cndecl;
+    for (int i = 0; i < dcn; ++i)
     {
         srcargs += format("DECLARE_SRC_PARAM(%d)", i);
         srcdecl += format("DECLARE_DATA(%d)", i);
         processelem += format("PROCESS_ELEM(%d)", i);
+        cndecl += format(" -D scn%d=%d", i, ksrc[i].channels());
     }
 
     ocl::Kernel k("merge", ocl::core::split_merge_oclsrc,
-                  format("-D OP_MERGE -D cn=%d -D T=%s -D DECLARE_SRC_PARAMS_N=%s -D DECLARE_DATA_N=%s -D PROCESS_ELEMS_N=%s",
-                         (int)srcsize, ocl::memopTypeToStr(depth), srcargs.c_str(), srcdecl.c_str(), processelem.c_str()));
+                  format("-D OP_MERGE -D cn=%d -D T=%s -D DECLARE_SRC_PARAMS_N=%s"
+                         " -D DECLARE_DATA_N=%s -D PROCESS_ELEMS_N=%s%s",
+                         dcn, ocl::memopTypeToStr(depth), srcargs.c_str(),
+                         srcdecl.c_str(), processelem.c_str(), cndecl.c_str()));
     if (k.empty())
         return false;
 
-    _dst.create(size, CV_MAKE_TYPE(depth, (int)srcsize));
+    _dst.create(size, CV_MAKE_TYPE(depth, dcn));
     UMat dst = _dst.getUMat();
 
     int argidx = 0;
-    for (size_t i = 0; i < srcsize; ++i)
-        argidx = k.set(argidx, ocl::KernelArg::ReadOnlyNoSize(src[i]));
+    for (int i = 0; i < dcn; ++i)
+        argidx = k.set(argidx, ocl::KernelArg::ReadOnlyNoSize(ksrc[i]));
     k.set(argidx, ocl::KernelArg::WriteOnly(dst));
 
     size_t globalsize[2] = { dst.cols, dst.rows };
@@ -1067,6 +1079,41 @@ dtype* dst, size_t dstep, Size size, double* scale) \
     cvtScale_(src, sstep, dst, dstep, size, (wtype)scale[0], (wtype)scale[1]); \
 }
 
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+#define DEF_CVT_FUNC_F(suffix, stype, dtype, ippFavor) \
+static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
+                         dtype* dst, size_t dstep, Size size, double*) \
+{ \
+    if (src && dst)\
+    {\
+        if (ippiConvert_##ippFavor(src, (int)sstep, dst, (int)dstep, ippiSize(size.width, size.height)) >= 0) \
+            return; \
+        setIppErrorStatus(); \
+    }\
+    cvt_(src, sstep, dst, dstep, size); \
+}
+
+#define DEF_CVT_FUNC_F2(suffix, stype, dtype, ippFavor) \
+static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
+                         dtype* dst, size_t dstep, Size size, double*) \
+{ \
+    if (src && dst)\
+    {\
+        if (ippiConvert_##ippFavor(src, (int)sstep, dst, (int)dstep, ippiSize(size.width, size.height), ippRndFinancial, 0) >= 0) \
+            return; \
+        setIppErrorStatus(); \
+    }\
+    cvt_(src, sstep, dst, dstep, size); \
+}
+#else
+#define DEF_CVT_FUNC_F(suffix, stype, dtype, ippFavor) \
+static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
+                         dtype* dst, size_t dstep, Size size, double*) \
+{ \
+    cvt_(src, sstep, dst, dstep, size); \
+}
+#define DEF_CVT_FUNC_F2 DEF_CVT_FUNC_F
+#endif
 
 #define DEF_CVT_FUNC(suffix, stype, dtype) \
 static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
@@ -1077,7 +1124,7 @@ static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
 
 #define DEF_CPY_FUNC(suffix, stype) \
 static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
-stype* dst, size_t dstep, Size size, double*) \
+                         stype* dst, size_t dstep, Size size, double*) \
 { \
     cpy_(src, sstep, dst, dstep, size); \
 }
@@ -1148,48 +1195,48 @@ DEF_CVT_SCALE_FUNC(32f64f, float, double, double)
 DEF_CVT_SCALE_FUNC(64f,    double, double, double)
 
 DEF_CPY_FUNC(8u,     uchar)
-DEF_CVT_FUNC(8s8u,   schar, uchar)
-DEF_CVT_FUNC(16u8u,  ushort, uchar)
-DEF_CVT_FUNC(16s8u,  short, uchar)
-DEF_CVT_FUNC(32s8u,  int, uchar)
-DEF_CVT_FUNC(32f8u,  float, uchar)
+DEF_CVT_FUNC_F(8s8u,   schar, uchar, 8s8u_C1Rs)
+DEF_CVT_FUNC_F(16u8u,  ushort, uchar, 16u8u_C1R)
+DEF_CVT_FUNC_F(16s8u,  short, uchar, 16s8u_C1R)
+DEF_CVT_FUNC_F(32s8u,  int, uchar, 32s8u_C1R)
+DEF_CVT_FUNC_F2(32f8u,  float, uchar, 32f8u_C1RSfs)
 DEF_CVT_FUNC(64f8u,  double, uchar)
 
-DEF_CVT_FUNC(8u8s,   uchar, schar)
-DEF_CVT_FUNC(16u8s,  ushort, schar)
-DEF_CVT_FUNC(16s8s,  short, schar)
-DEF_CVT_FUNC(32s8s,  int, schar)
-DEF_CVT_FUNC(32f8s,  float, schar)
+DEF_CVT_FUNC_F2(8u8s,   uchar, schar, 8u8s_C1RSfs)
+DEF_CVT_FUNC_F2(16u8s,  ushort, schar, 16u8s_C1RSfs)
+DEF_CVT_FUNC_F2(16s8s,  short, schar, 16s8s_C1RSfs)
+DEF_CVT_FUNC_F(32s8s,  int, schar, 32s8s_C1R)
+DEF_CVT_FUNC_F2(32f8s,  float, schar, 32f8s_C1RSfs)
 DEF_CVT_FUNC(64f8s,  double, schar)
 
-DEF_CVT_FUNC(8u16u,  uchar, ushort)
-DEF_CVT_FUNC(8s16u,  schar, ushort)
+DEF_CVT_FUNC_F(8u16u,  uchar, ushort, 8u16u_C1R)
+DEF_CVT_FUNC_F(8s16u,  schar, ushort, 8s16u_C1Rs)
 DEF_CPY_FUNC(16u,    ushort)
-DEF_CVT_FUNC(16s16u, short, ushort)
-DEF_CVT_FUNC(32s16u, int, ushort)
-DEF_CVT_FUNC(32f16u, float, ushort)
+DEF_CVT_FUNC_F(16s16u, short, ushort, 16s16u_C1Rs)
+DEF_CVT_FUNC_F2(32s16u, int, ushort, 32s16u_C1RSfs)
+DEF_CVT_FUNC_F2(32f16u, float, ushort, 32f16u_C1RSfs)
 DEF_CVT_FUNC(64f16u, double, ushort)
 
-DEF_CVT_FUNC(8u16s,  uchar, short)
-DEF_CVT_FUNC(8s16s,  schar, short)
-DEF_CVT_FUNC(16u16s, ushort, short)
-DEF_CVT_FUNC(32s16s, int, short)
-DEF_CVT_FUNC(32f16s, float, short)
+DEF_CVT_FUNC_F(8u16s,  uchar, short, 8u16s_C1R)
+DEF_CVT_FUNC_F(8s16s,  schar, short, 8s16s_C1R)
+DEF_CVT_FUNC_F2(16u16s, ushort, short, 16u16s_C1RSfs)
+DEF_CVT_FUNC_F2(32s16s, int, short, 32s16s_C1RSfs)
+DEF_CVT_FUNC_F2(32f16s, float, short, 32f16s_C1RSfs)
 DEF_CVT_FUNC(64f16s, double, short)
 
-DEF_CVT_FUNC(8u32s,  uchar, int)
-DEF_CVT_FUNC(8s32s,  schar, int)
-DEF_CVT_FUNC(16u32s, ushort, int)
-DEF_CVT_FUNC(16s32s, short, int)
+DEF_CVT_FUNC_F(8u32s,  uchar, int, 8u32s_C1R)
+DEF_CVT_FUNC_F(8s32s,  schar, int, 8s32s_C1R)
+DEF_CVT_FUNC_F(16u32s, ushort, int, 16u32s_C1R)
+DEF_CVT_FUNC_F(16s32s, short, int, 16s32s_C1R)
 DEF_CPY_FUNC(32s,    int)
-DEF_CVT_FUNC(32f32s, float, int)
+DEF_CVT_FUNC_F2(32f32s, float, int, 32f32s_C1RSfs)
 DEF_CVT_FUNC(64f32s, double, int)
 
-DEF_CVT_FUNC(8u32f,  uchar, float)
-DEF_CVT_FUNC(8s32f,  schar, float)
-DEF_CVT_FUNC(16u32f, ushort, float)
-DEF_CVT_FUNC(16s32f, short, float)
-DEF_CVT_FUNC(32s32f, int, float)
+DEF_CVT_FUNC_F(8u32f,  uchar, float, 8u32f_C1R)
+DEF_CVT_FUNC_F(8s32f,  schar, float, 8s32f_C1R)
+DEF_CVT_FUNC_F(16u32f, ushort, float, 16u32f_C1R)
+DEF_CVT_FUNC_F(16s32f, short, float, 16s32f_C1R)
+DEF_CVT_FUNC_F(32s32f, int, float, 32s32f_C1R)
 DEF_CVT_FUNC(64f32f, double, float)
 
 DEF_CVT_FUNC(8u64f,  uchar, double)
@@ -1422,7 +1469,7 @@ void cv::Mat::convertTo(OutputArray _dst, int _type, double alpha, double beta) 
         Size sz((int)(it.size*cn), 1);
 
         for( size_t i = 0; i < it.nplanes; i++, ++it )
-            func(ptrs[0], 0, 0, 0, ptrs[1], 0, sz, scale);
+            func(ptrs[0], 1, 0, 0, ptrs[1], 1, sz, scale);
     }
 }
 
@@ -1496,10 +1543,10 @@ static LUTFunc lutTab[] =
 
 static bool ocl_LUT(InputArray _src, InputArray _lut, OutputArray _dst)
 {
-    int dtype = _dst.type(), lcn = _lut.channels(), dcn = CV_MAT_CN(dtype), ddepth = CV_MAT_DEPTH(dtype);
+    int lcn = _lut.channels(), dcn = _src.channels(), ddepth = _lut.depth();
 
     UMat src = _src.getUMat(), lut = _lut.getUMat();
-    _dst.create(src.size(), dtype);
+    _dst.create(src.size(), CV_MAKETYPE(ddepth, dcn));
     UMat dst = _dst.getUMat();
 
     ocl::Kernel k("LUT", ocl::core::lut_oclsrc,
@@ -1516,6 +1563,201 @@ static bool ocl_LUT(InputArray _src, InputArray _lut, OutputArray _dst)
 }
 
 #endif
+
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+namespace ipp {
+
+#if 0 // there are no performance benefits (PR #2653)
+class IppLUTParallelBody_LUTC1 : public ParallelLoopBody
+{
+public:
+    bool* ok;
+    const Mat& src_;
+    const Mat& lut_;
+    Mat& dst_;
+
+    typedef IppStatus (*IppFn)(const Ipp8u* pSrc, int srcStep, void* pDst, int dstStep,
+                          IppiSize roiSize, const void* pTable, int nBitSize);
+    IppFn fn;
+
+    int width;
+
+    IppLUTParallelBody_LUTC1(const Mat& src, const Mat& lut, Mat& dst, bool* _ok)
+        : ok(_ok), src_(src), lut_(lut), dst_(dst)
+    {
+        width = dst.cols * dst.channels();
+
+        size_t elemSize1 = CV_ELEM_SIZE1(dst.depth());
+
+        fn =
+                elemSize1 == 1 ? (IppFn)ippiLUTPalette_8u_C1R :
+                elemSize1 == 4 ? (IppFn)ippiLUTPalette_8u32u_C1R :
+                NULL;
+
+        *ok = (fn != NULL);
+    }
+
+    void operator()( const cv::Range& range ) const
+    {
+        if (!*ok)
+            return;
+
+        const int row0 = range.start;
+        const int row1 = range.end;
+
+        Mat src = src_.rowRange(row0, row1);
+        Mat dst = dst_.rowRange(row0, row1);
+
+        IppiSize sz = { width, dst.rows };
+
+        CV_DbgAssert(fn != NULL);
+        if (fn(src.data, (int)src.step[0], dst.data, (int)dst.step[0], sz, lut_.data, 8) < 0)
+        {
+            setIppErrorStatus();
+            *ok = false;
+        }
+    }
+private:
+    IppLUTParallelBody_LUTC1(const IppLUTParallelBody_LUTC1&);
+    IppLUTParallelBody_LUTC1& operator=(const IppLUTParallelBody_LUTC1&);
+};
+#endif
+
+class IppLUTParallelBody_LUTCN : public ParallelLoopBody
+{
+public:
+    bool *ok;
+    const Mat& src_;
+    const Mat& lut_;
+    Mat& dst_;
+
+    int lutcn;
+
+    uchar* lutBuffer;
+    uchar* lutTable[4];
+
+    IppLUTParallelBody_LUTCN(const Mat& src, const Mat& lut, Mat& dst, bool* _ok)
+        : ok(_ok), src_(src), lut_(lut), dst_(dst), lutBuffer(NULL)
+    {
+        lutcn = lut.channels();
+        IppiSize sz256 = {256, 1};
+
+        size_t elemSize1 = dst.elemSize1();
+        CV_DbgAssert(elemSize1 == 1);
+        lutBuffer = (uchar*)ippMalloc(256 * (int)elemSize1 * 4);
+        lutTable[0] = lutBuffer + 0;
+        lutTable[1] = lutBuffer + 1 * 256 * elemSize1;
+        lutTable[2] = lutBuffer + 2 * 256 * elemSize1;
+        lutTable[3] = lutBuffer + 3 * 256 * elemSize1;
+
+        CV_DbgAssert(lutcn == 3 || lutcn == 4);
+        if (lutcn == 3)
+        {
+            IppStatus status = ippiCopy_8u_C3P3R(lut.data, (int)lut.step[0], lutTable, (int)lut.step[0], sz256);
+            if (status < 0)
+            {
+                setIppErrorStatus();
+                return;
+            }
+        }
+        else if (lutcn == 4)
+        {
+            IppStatus status = ippiCopy_8u_C4P4R(lut.data, (int)lut.step[0], lutTable, (int)lut.step[0], sz256);
+            if (status < 0)
+            {
+                setIppErrorStatus();
+                return;
+            }
+        }
+
+        *ok = true;
+    }
+
+    ~IppLUTParallelBody_LUTCN()
+    {
+        if (lutBuffer != NULL)
+            ippFree(lutBuffer);
+        lutBuffer = NULL;
+        lutTable[0] = NULL;
+    }
+
+    void operator()( const cv::Range& range ) const
+    {
+        if (!*ok)
+            return;
+
+        const int row0 = range.start;
+        const int row1 = range.end;
+
+        Mat src = src_.rowRange(row0, row1);
+        Mat dst = dst_.rowRange(row0, row1);
+
+        if (lutcn == 3)
+        {
+            if (ippiLUTPalette_8u_C3R(
+                    src.data, (int)src.step[0], dst.data, (int)dst.step[0],
+                    ippiSize(dst.size()), lutTable, 8) >= 0)
+                return;
+        }
+        else if (lutcn == 4)
+        {
+            if (ippiLUTPalette_8u_C4R(
+                    src.data, (int)src.step[0], dst.data, (int)dst.step[0],
+                    ippiSize(dst.size()), lutTable, 8) >= 0)
+                return;
+        }
+        setIppErrorStatus();
+        *ok = false;
+    }
+private:
+    IppLUTParallelBody_LUTCN(const IppLUTParallelBody_LUTCN&);
+    IppLUTParallelBody_LUTCN& operator=(const IppLUTParallelBody_LUTCN&);
+};
+} // namespace ipp
+#endif // IPP
+
+class LUTParallelBody : public ParallelLoopBody
+{
+public:
+    bool* ok;
+    const Mat& src_;
+    const Mat& lut_;
+    Mat& dst_;
+
+    LUTFunc func;
+
+    LUTParallelBody(const Mat& src, const Mat& lut, Mat& dst, bool* _ok)
+        : ok(_ok), src_(src), lut_(lut), dst_(dst)
+    {
+        func = lutTab[lut.depth()];
+        *ok = (func != NULL);
+    }
+
+    void operator()( const cv::Range& range ) const
+    {
+        CV_DbgAssert(*ok);
+
+        const int row0 = range.start;
+        const int row1 = range.end;
+
+        Mat src = src_.rowRange(row0, row1);
+        Mat dst = dst_.rowRange(row0, row1);
+
+        int cn = src.channels();
+        int lutcn = lut_.channels();
+
+        const Mat* arrays[] = {&src, &dst, 0};
+        uchar* ptrs[2];
+        NAryMatIterator it(arrays, ptrs);
+        int len = (int)it.size;
+
+        for( size_t i = 0; i < it.nplanes; i++, ++it )
+            func(ptrs[0], lut_.data, ptrs[1], len, cn, lutcn);
+    }
+private:
+    LUTParallelBody(const LUTParallelBody&);
+    LUTParallelBody& operator=(const LUTParallelBody&);
+};
 
 }
 
@@ -1534,6 +1776,44 @@ void cv::LUT( InputArray _src, InputArray _lut, OutputArray _dst )
     Mat src = _src.getMat(), lut = _lut.getMat();
     _dst.create(src.dims, src.size, CV_MAKETYPE(_lut.depth(), cn));
     Mat dst = _dst.getMat();
+
+    if (_src.dims() <= 2)
+    {
+        bool ok = false;
+        Ptr<ParallelLoopBody> body;
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+        size_t elemSize1 = CV_ELEM_SIZE1(dst.depth());
+#if 0 // there are no performance benefits (PR #2653)
+        if (lutcn == 1)
+        {
+            ParallelLoopBody* p = new ipp::IppLUTParallelBody_LUTC1(src, lut, dst, &ok);
+            body.reset(p);
+        }
+        else
+#endif
+        if ((lutcn == 3 || lutcn == 4) && elemSize1 == 1)
+        {
+            ParallelLoopBody* p = new ipp::IppLUTParallelBody_LUTCN(src, lut, dst, &ok);
+            body.reset(p);
+        }
+#endif
+        if (body == NULL || ok == false)
+        {
+            ok = false;
+            ParallelLoopBody* p = new LUTParallelBody(src, lut, dst, &ok);
+            body.reset(p);
+        }
+        if (body != NULL && ok)
+        {
+            Range all(0, dst.rows);
+            if (dst.total()>>18)
+                parallel_for_(all, *body, (double)std::max((size_t)1, dst.total()>>16));
+            else
+                (*body)(all);
+            if (ok)
+                return;
+        }
+    }
 
     LUTFunc func = lutTab[lut.depth()];
     CV_Assert( func != 0 );

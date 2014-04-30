@@ -219,6 +219,8 @@ static void integral_##suffix( T* src, size_t srcstep, ST* sum, size_t sumstep, 
 DEF_INTEGRAL_FUNC(8u32s, uchar, int, double)
 DEF_INTEGRAL_FUNC(8u32f64f, uchar, float, double)
 DEF_INTEGRAL_FUNC(8u64f64f, uchar, double, double)
+DEF_INTEGRAL_FUNC(16u64f64f, ushort, double, double)
+DEF_INTEGRAL_FUNC(16s64f64f, short, double, double)
 DEF_INTEGRAL_FUNC(32f32f64f, float, float, double)
 DEF_INTEGRAL_FUNC(32f64f64f, float, double, double)
 DEF_INTEGRAL_FUNC(64f64f64f, double, double, double)
@@ -365,30 +367,33 @@ void cv::integral( InputArray _src, OutputArray _sum, OutputArray _sqsum, Output
 #if defined (HAVE_IPP) && (IPP_VERSION_MAJOR >= 7)
     if( ( depth == CV_8U ) && ( sdepth == CV_32F || sdepth == CV_32S ) && ( !_tilted.needed() ) && ( !_sqsum.needed() || sqdepth == CV_64F ) && ( cn == 1 ) )
     {
+        IppStatus status = ippStsErr;
         IppiSize srcRoiSize = ippiSize( src.cols, src.rows );
         if( sdepth == CV_32F )
         {
             if( _sqsum.needed() )
             {
-                ippiSqrIntegral_8u32f64f_C1R( (const Ipp8u*)src.data, (int)src.step, (Ipp32f*)sum.data, (int)sum.step, (Ipp64f*)sqsum.data, (int)sqsum.step, srcRoiSize, 0, 0 );
+                status = ippiSqrIntegral_8u32f64f_C1R( (const Ipp8u*)src.data, (int)src.step, (Ipp32f*)sum.data, (int)sum.step, (Ipp64f*)sqsum.data, (int)sqsum.step, srcRoiSize, 0, 0 );
             }
             else
             {
-                ippiIntegral_8u32f_C1R( (const Ipp8u*)src.data, (int)src.step, (Ipp32f*)sum.data, (int)sum.step, srcRoiSize, 0 );
+                status = ippiIntegral_8u32f_C1R( (const Ipp8u*)src.data, (int)src.step, (Ipp32f*)sum.data, (int)sum.step, srcRoiSize, 0 );
             }
         }
         else if( sdepth == CV_32S )
         {
             if( _sqsum.needed() )
             {
-                ippiSqrIntegral_8u32s64f_C1R( (const Ipp8u*)src.data, (int)src.step, (Ipp32s*)sum.data, (int)sum.step, (Ipp64f*)sqsum.data, (int)sqsum.step, srcRoiSize, 0, 0 );
+                status = ippiSqrIntegral_8u32s64f_C1R( (const Ipp8u*)src.data, (int)src.step, (Ipp32s*)sum.data, (int)sum.step, (Ipp64f*)sqsum.data, (int)sqsum.step, srcRoiSize, 0, 0 );
             }
             else
             {
-                ippiIntegral_8u32s_C1R( (const Ipp8u*)src.data, (int)src.step, (Ipp32s*)sum.data, (int)sum.step, srcRoiSize, 0 );
+                status = ippiIntegral_8u32s_C1R( (const Ipp8u*)src.data, (int)src.step, (Ipp32s*)sum.data, (int)sum.step, srcRoiSize, 0 );
             }
         }
-        return;
+        if (0 <= status)
+            return;
+        setIppErrorStatus();
     }
 #endif
 
@@ -409,6 +414,10 @@ void cv::integral( InputArray _src, OutputArray _sum, OutputArray _sqsum, Output
         func = (IntegralFunc)integral_8u32f32f;
     else if( depth == CV_8U && sdepth == CV_64F && sqdepth == CV_64F )
         func = (IntegralFunc)integral_8u64f64f;
+    else if( depth == CV_16U && sdepth == CV_64F && sqdepth == CV_64F )
+        func = (IntegralFunc)integral_16u64f64f;
+    else if( depth == CV_16S && sdepth == CV_64F && sqdepth == CV_64F )
+        func = (IntegralFunc)integral_16s64f64f;
     else if( depth == CV_32F && sdepth == CV_32F && sqdepth == CV_64F )
         func = (IntegralFunc)integral_32f32f64f;
     else if( depth == CV_32F && sdepth == CV_32F && sqdepth == CV_32F )
